@@ -78,7 +78,7 @@ public final class OnlineBridge {
 
     // ---- test bots -------------------------------------------------------------------------------
 
-    private static final int FRAME_BYTES = 0x12a0, READY_FLAG = 0x1, VEHICLE_FLAGS = 0x2 | 0x8 | 0x40, WORLD_FLAG = 0x20;
+    private static final int FRAME_BYTES = 0x12a0, READY_FLAG = 0x1, IN_VEHICLE_FLAGS = 0x2 | 0x40, CAR_INITIAL_FLAG = 0x8, WORLD_FLAG = 0x20;
     private static final int FLAGS = 0, VEHICLE_COUNT = 0x1c, X = 0x20, Y = 0x24, VEHICLES = 0xe8, RULES = 0x11e8, HEALTH_EPOCH = 0x129c;
     private static final Bot[] BOTS = new Bot[3];
     /** The host's own latest game frame, for mirror bots. */
@@ -113,20 +113,30 @@ public final class OnlineBridge {
         @Override public void receive(byte[] frame) { }
 
         @Override public byte[] snapshot() {
-            if (mirror) {
-                try {
-                    byte[] made = mirrored(hostFrame, index);
-                    if (made != null) {
-                        if (LanFrame.valid(made)) { last = made; note = "镜像"; }
-                        else note = "镜像帧无效";
-                    }
-                    if (last != null) return last;
-                } catch (Throwable t) {
-                    note = "镜像失败:" + t.getClass().getSimpleName();
-                }
-            } else {
+            if (!mirror) {
                 last = null;
                 note = "";
+                return LanFrame.empty();
+            }
+            try {
+                byte[] frame = hostFrame;
+                String skip = skipReason(frame);
+                if (skip != null) {
+                    note = last != null ? "镜像,停留:" + skip : "镜像未开始:" + skip;
+                } else {
+                    // The game decides what a legal frame is; try the plain copy first, then without the "initial car" mark.
+                    byte[] made = mirrored(frame, index, false);
+                    if (!LanFrame.valid(made)) made = mirrored(frame, index, true);
+                    if (LanFrame.valid(made)) {
+                        last = made;
+                        note = "镜像中";
+                    } else {
+                        note = "镜像帧不合法 flags=0x" + Integer.toHexString(flags(frame));
+                    }
+                }
+                if (last != null) return last;
+            } catch (Throwable t) {
+                note = "镜像失败:" + t.getClass().getSimpleName();
             }
             return LanFrame.empty();
         }
@@ -147,23 +157,30 @@ public final class OnlineBridge {
         }
     }
 
-    /**
-     * The host's frame moved a few metres aside, without the parts only a host or a driver sends.
-     * Null when the host is not on foot in the game, so the bot keeps standing where it last was.
-     */
-    static byte[] mirrored(byte[] frame, int index) {
-        if (frame == null || frame.length != FRAME_BYTES) return null;
-        ByteBuffer source = ByteBuffer.wrap(frame).order(ByteOrder.LITTLE_ENDIAN);
-        int flags = source.getInt(FLAGS);
-        if ((flags & READY_FLAG) == 0 || (flags & VEHICLE_FLAGS) != 0) return null;
+    private static int flags(byte[] frame) { return ByteBuffer.wrap(frame).order(ByteOrder.LITTLE_ENDIAN).getInt(FLAGS); }
+
+    /** Why the host's current frame cannot be mirrored, or null if it can. */
+    static String skipReason(byte[] frame) {
+        if (frame == null) return "还没有拿到房主的状态";
+        if (frame.length != FRAME_BYTES) return "状态长度=" + frame.length;
+        int flags = flags(frame);
+        if ((flags & READY_FLAG) == 0) return "房主未就绪 flags=0x" + Integer.toHexString(flags);
+        if ((flags & IN_VEHICLE_FLAGS) != 0) return "房主在车上 flags=0x" + Integer.toHexString(flags);
+        return null;
+    }
+
+    /** The host's frame moved a few metres aside, without the parts only a host or a driver sends. */
+    static byte[] mirrored(byte[] frame, int index, boolean dropInitialCar) {
         byte[] copy = frame.clone();
         ByteBuffer out = ByteBuffer.wrap(copy).order(ByteOrder.LITTLE_ENDIAN);
-        out.putInt(FLAGS, flags & ~WORLD_FLAG);
+        int flags = out.getInt(FLAGS) & ~WORLD_FLAG;
+        if (dropInitialCar) flags &= ~CAR_INITIAL_FLAG;
+        out.putInt(FLAGS, flags);
         out.putInt(VEHICLE_COUNT, 0);
         Arrays.fill(copy, VEHICLES, RULES, (byte) 0);          // world vehicles
         Arrays.fill(copy, RULES, HEALTH_EPOCH, (byte) 0);      // room rules, damage dealt, melee
-        out.putFloat(X, source.getFloat(X) + 2.5f * index);
-        out.putFloat(Y, source.getFloat(Y) + 2.5f);
+        out.putFloat(X, out.getFloat(X) + 2.5f * index);
+        out.putFloat(Y, out.getFloat(Y) + 2.5f);
         return copy;
     }
 
