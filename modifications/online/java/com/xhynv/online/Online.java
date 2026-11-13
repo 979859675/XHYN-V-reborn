@@ -8,6 +8,7 @@ import android.os.Looper;
 import android.widget.Toast;
 
 import com.gtavsource.android.lan.LanSession;
+import com.gtavsource.android.lan.OnlineBridge;
 
 import java.net.Inet4Address;
 import java.net.InetAddress;
@@ -27,6 +28,10 @@ public final class Online {
     static final Handler main = new Handler(Looper.getMainLooper());
     private static volatile Context app;
     private static boolean reporting;
+    /** Why {@link #sessionName} last refused; the game shows it as its LAN status. */
+    public static volatile String refusal = NEED_LOGIN;
+    /** State of the host's relay session, for the card. */
+    static volatile String relayStatus = "";
 
     interface Work<T> { T run() throws ApiException; }
 
@@ -50,23 +55,61 @@ public final class Online {
     static String username() { return app == null ? "" : prefs().getString("username", ""); }
     static String characterName() { return app == null ? "" : prefs().getString("character", ""); }
     static boolean signedIn() { return !token().isEmpty(); }
+    /** Whether rooms created on this phone are opened to the internet through the relay. */
+    static boolean relayEnabled() { return app != null && prefs().getBoolean("relay", true); }
+
+    static void setRelayEnabled(boolean enabled) {
+        prefs().edit().putBoolean("relay", enabled).apply();
+        if (!enabled) relayStatus = "";
+    }
 
     static void signIn(String token, String username) {
         prefs().edit().putString("token", token).putString("username", username).remove("character").apply();
+        Relay.hostSession = null;
+        Relay.joinSession = null;
     }
 
     static void setCharacter(String name) { prefs().edit().putString("character", name).apply(); }
 
     static void signOut() {
         if (app != null) prefs().edit().remove("token").remove("character").apply();
+        Relay.hostSession = null;
+        Relay.joinSession = null;
+        relayStatus = "";
     }
 
+    /**
+     * Shows a short message. Toasts alone are not enough: several Android skins hide them when the
+     * app's notifications are switched off, so the message is also written into the lobby card.
+     */
     static void toast(final String message) {
         main.post(new Runnable() {
             @Override public void run() {
-                if (app != null) Toast.makeText(app, message, Toast.LENGTH_LONG).show();
+                OnlineUi.notice = message;
+                OnlineUi.renderAll();
+                try {
+                    if (app != null) Toast.makeText(app, message, Toast.LENGTH_LONG).show();
+                } catch (Throwable ignored) {
+                }
             }
         });
+    }
+
+    private static void render() {
+        main.post(new Runnable() { @Override public void run() { OnlineUi.renderAll(); } });
+    }
+
+    /** Copies the game's own LAN status line into the card, so pressing create/join always shows a result. */
+    static void showLanStatus() {
+        try {
+            LanSession.State state = LanSession.state();
+            String status = state.status == null ? "" : state.status.trim();
+            if (!status.equals(OnlineUi.lanStatus)) {
+                OnlineUi.lanStatus = status;
+                render();
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     /** Runs {@code work} off the UI thread and delivers the outcome on it. A rejected token signs the user out. */
@@ -102,23 +145,83 @@ public final class Online {
         thread.start();
     }
 
+    private static String refuse(String reason, boolean dialog) {
+        refusal = reason;
+        if (dialog) main.post(new Runnable() { @Override public void run() { OnlineUi.askToSignIn(); } });
+        else toast(reason);
+        return null;
+    }
+
     /**
      * Called by the game when a LAN session starts. Returns the name to play under, or null to refuse
-     * because nobody is signed in. Any unexpected failure falls back to the typed name so LAN play keeps working.
+     * (the reason is left in {@link #refusal}). Also decides whether this session goes through the relay.
+     * Any unexpected failure falls back to the typed name and plain LAN so local play keeps working.
      */
-    public static String sessionName(Context context, String typed) {
+    public static String sessionName(Context context, String typed, boolean host, String address) {
         try {
             init(context);
             startReporter();
+            Relay.active = null;
             String name = characterName();
-            if (!signedIn() || name.isEmpty()) {
-                toast(NEED_LOGIN);
-                return null;
+            if (!signedIn() || name.isEmpty()) return refuse(NEED_LOGIN, true);
+            long now = System.currentTimeMillis();
+            Relay.Session relay = null;
+            if (host) {
+                if (relayEnabled()) {
+                    relay = Relay.hostSession;
+                    if (relay == null || !relay.fresh(now)) {
+                        prepareHostRelay();
+                        return refuse("公网联机还没有准备好，请过几秒再点一次。如果一直不行，可以先关闭“公网联机”，用同一 Wi-Fi 或热点联机。", false);
+                    }
+                }
+            } else if (Relay.HOST_IP.equals(address == null ? "" : address.trim())) {
+                relay = Relay.joinSession;
+                if (relay == null || !relay.fresh(now)) {
+                    return refuse("这个公网房间的连接信息已过期，请在“在线房间”里重新选择它。", false);
+                }
+            }
+            Relay.active = relay;
+            OnlineUi.notice = "";
+            // The game fills in its status just after this returns, and again once the socket is open.
+            for (long delay : new long[] { 300, 1500, 4000 }) {
+                main.postDelayed(new Runnable() { @Override public void run() { showLanStatus(); } }, delay);
             }
             return name;
         } catch (Throwable t) {
+            Relay.active = null;
             return typed;
         }
+    }
+
+    /**
+     * Called by the game with its "virtual LAN" setting as a session starts. A relayed session uses
+     * whatever network the phone has, so the game's VPN mode (which insists on a connected VPN app) is off for it.
+     */
+    public static boolean virtualFlag(boolean setting) { return Relay.active == null && setting; }
+
+    /** Gets (or refreshes) this user's relay network in the background. */
+    static void prepareHostRelay() {
+        final String token = token();
+        if (token.isEmpty() || characterName().isEmpty()) return;
+        Thread thread = new Thread(new Runnable() {
+            @Override public void run() { refreshHostRelay(token); }
+        }, "xhyn-relay-prepare");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private static synchronized void refreshHostRelay(String token) {
+        String before = relayStatus;
+        try {
+            Relay.hostSession = Relay.open(api, SERVER, token, 0, Relay.hostSession, System.currentTimeMillis());
+            relayStatus = "已就绪";
+        } catch (ApiException e) {
+            Relay.Session session = Relay.hostSession;
+            if (session == null || !session.fresh(System.currentTimeMillis())) relayStatus = "未就绪（" + e.getMessage() + "）";
+        } catch (RuntimeException e) {
+            relayStatus = "未就绪";
+        }
+        if (!relayStatus.equals(before)) render();
     }
 
     static synchronized void startReporter() {
@@ -129,21 +232,30 @@ public final class Online {
             @Override public void rejected() {
                 signOut();
                 toast("联机中心登录已失效，请重新登录");
-                main.post(new Runnable() { @Override public void run() { OnlineUi.renderAll(); } });
             }
         }, GAME_VERSION);
         Thread thread = new Thread(new Runnable() {
             @Override public void run() {
                 String shown = "";
+                long relayCheckedAt = 0;
                 while (true) {
                     try {
-                        Thread.sleep(5000);
-                        sync.tick(snapshot(), System.currentTimeMillis());
+                        Thread.sleep(relayCheckedAt == 0 ? 500 : 5000);
+                        long now = System.currentTimeMillis();
+                        // Keep the host's relay network alive so "create room" works at once, and so a
+                        // server restart during a game is picked up by the open socket.
+                        if (now - relayCheckedAt >= 120_000 || relayCheckedAt == 0) {
+                            relayCheckedAt = now;
+                            String token = token();
+                            if (relayEnabled() && !token.isEmpty() && !characterName().isEmpty()) refreshHostRelay(token);
+                        }
+                        showLanStatus();
+                        sync.tick(snapshot(), now);
                         String status = sync.status;
                         if (!status.equals(shown)) {
                             shown = status;
                             OnlineUi.syncStatus = status;
-                            main.post(new Runnable() { @Override public void run() { OnlineUi.renderAll(); } });
+                            render();
                         }
                     } catch (InterruptedException e) {
                         return;
@@ -162,11 +274,19 @@ public final class Online {
         LanSession.State state = LanSession.state();
         s.hosting = state.active && state.host && !state.busy && !state.cleanup;
         s.playing = state.active && state.gameReady;
-        s.virtualLan = state.virtualNetwork;
         s.code = state.code == null ? "" : state.code;
         s.players = state.players;
         s.limit = state.playerLimit;
-        if (s.hosting) s.address = address(state.virtualNetwork);
+        if (s.hosting) {
+            boolean relayed = Relay.active != null && Relay.active == Relay.hostSession;
+            s.virtualLan = !relayed && state.virtualNetwork;
+            s.address = relayed ? Relay.HOST_IP : address(state.virtualNetwork);
+            try {
+                s.race = OnlineBridge.finishedRace();
+            } catch (Throwable ignored) {
+                // Race reporting is optional; the room listing must not depend on it.
+            }
+        }
         return s;
     }
 

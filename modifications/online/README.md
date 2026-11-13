@@ -39,3 +39,16 @@ python3 build_online.py --base-apk XHYN-V-0.3-Preview2.apk --work-dir work \
 
 - `SyncTest`：JSON、接口调用、房间上报逻辑在 JVM 上对本地服务器测试通过。
 - 界面代码（`Online`、`OnlineUi`）和两处 smali 调用**没有在真机或模拟器上运行过**，只确认了能编译、能打包、调用签名对得上。
+
+
+## online2 新增
+
+- `Relay` / `RelaySocket`：公网中转。游戏创建 UDP 套接字的地方改为调用 `Relay.socket(...)`；会话走中转时得到一个
+  `DatagramSocket` 子类，它把游戏发往虚拟地址（`10.77.0.x`）的包封装后发给服务器，并把收到的包还原成“来自对方虚拟地址”的样子。
+  游戏自己的协议、房间码校验都不变。帧格式见 `server/src/relay.js`。
+- `com.gtavsource.android.lan.OnlineBridge`：读取比赛结算（比赛类是包内可见的，所以这个类放在游戏的包里）。房主每 5 秒检查一次，
+  结算界面出现时上报一次 `POST /races`。
+- 应用名：`build_online.py` 只重建 `AndroidManifest.xml` 并替换 `android:label`。
+- `build_online.py` 的 `--base-apk` 现在也接受本仓库发布的汉化版 APK。
+
+`test/SyncTest.java` 对着本地启动的服务器测试房间同步、成绩上报和中转套接字（不需要 Android）。

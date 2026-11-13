@@ -24,9 +24,11 @@ import java.util.Map;
 public final class OnlineUi {
     private static final List<WeakReference<OnlineUi>> CARDS = new ArrayList<WeakReference<OnlineUi>>();
     static volatile String syncStatus = "";
+    /** The game's LAN status line, and the latest message from the lobby; both are shown in the card. */
+    static volatile String lanStatus = "", notice = "";
 
     private final Activity activity;
-    private final TextView status;
+    private final TextView status, message;
     private final LinearLayout buttons;
     private final EditText name, ip, code;
 
@@ -64,7 +66,7 @@ public final class OnlineUi {
         card.setPadding(dp(12), dp(10), dp(12), dp(10));
         card.setBackground(box(0xFF1B2230, 10));
         TextView title = new TextView(activity);
-        title.setText("联机中心");
+        title.setText("小春GTA5Online · 联机中心");
         title.setTextSize(15);
         title.setTextColor(0xFFECF3F8);
         card.addView(title);
@@ -76,6 +78,11 @@ public final class OnlineUi {
         buttons = new LinearLayout(activity);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
         card.addView(buttons);
+        message = new TextView(activity);
+        message.setTextSize(13);
+        message.setTextColor(0xFFFFC857);
+        message.setPadding(0, dp(8), 0, 0);
+        card.addView(message);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         params.setMargins(0, dp(6), 0, dp(10));
         page.addView(card, Math.min(1, page.getChildCount()), params);
@@ -101,9 +108,53 @@ public final class OnlineUi {
             status.setText(line);
             addButton(character.isEmpty() ? "选择角色" : "切换角色", character.isEmpty(), new Runnable() { @Override public void run() { showCharacters(); } });
             if (ip != null && code != null) addButton("在线房间", !character.isEmpty(), new Runnable() { @Override public void run() { showRooms(); } });
+            if (name != null && ip == null) {
+                // The "create room" page: choose whether the room is reachable over the internet.
+                final boolean relay = Online.relayEnabled();
+                addButton(relay ? "公网联机：开" : "公网联机：关", false, new Runnable() {
+                    @Override public void run() {
+                        Online.setRelayEnabled(!relay);
+                        if (!relay) Online.prepareHostRelay();
+                        renderAll();
+                    }
+                });
+                line += relay
+                        ? "\n公网联机已开启" + (Online.relayStatus.isEmpty() ? "，正在准备…" : "：" + Online.relayStatus) + "。不在同一网络的玩家也能加入，数据经服务器中转。"
+                        : "\n公网联机已关闭：只有同一 Wi-Fi、热点或虚拟局域网里的玩家能加入。";
+                status.setText(line);
+            }
             addButton("退出登录", false, new Runnable() { @Override public void run() { signOut(); } });
         }
         if (name != null && !character.contentEquals(name.getText())) name.setText(character);
+        String lines = notice;
+        if (!lanStatus.isEmpty()) lines += (lines.isEmpty() ? "" : "\n") + "联机状态：" + lanStatus;
+        message.setText(lines);
+        message.setVisibility(lines.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
+    /** Create/join was pressed without an account or a character: say so in a dialog and offer the next step. */
+    static void askToSignIn() {
+        notice = Online.NEED_LOGIN;
+        renderAll();
+        OnlineUi card = null;
+        for (WeakReference<OnlineUi> reference : CARDS) {
+            OnlineUi candidate = reference.get();
+            if (candidate != null && !candidate.activity.isDestroyed() && candidate.status.isShown()) card = candidate;
+        }
+        if (card == null) return;
+        final OnlineUi shown = card;
+        final boolean signedIn = Online.signedIn();
+        try {
+            new AlertDialog.Builder(shown.activity).setTitle("联机中心")
+                    .setMessage(signedIn ? "还没有选择角色。选择或创建一个角色后，才能创建或加入房间。" : "还没有登录。登录并选择角色后，才能创建或加入房间。")
+                    .setPositiveButton(signedIn ? "选择角色" : "登录 / 注册", new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface dialog, int which) {
+                            if (signedIn) shown.showCharacters(); else shown.showLogin();
+                        }
+                    }).setNegativeButton("取消", null).show();
+        } catch (Throwable ignored) {
+            // The message is already in the card.
+        }
     }
 
     // ---- sign in ---------------------------------------------------------------------------------
@@ -150,6 +201,7 @@ public final class OnlineUi {
                 }, new Online.Done<String>() {
                     @Override public void ok(String character) {
                         dialog.dismiss();
+                        notice = "";
                         if (character.isEmpty()) showCharacters();
                     }
                     @Override public void failed(String message) {
@@ -276,11 +328,13 @@ public final class OnlineUi {
                         @SuppressWarnings("unchecked") Map<String, Object> room = (Map<String, Object>) rooms.get(i);
                         labels[i] = Json.string(room, "title") + "\n房主 " + Json.string(room, "hostName") + " · "
                                 + Json.number(room, "players") + "/" + Json.number(room, "maxPlayers") + " 人"
-                                + (Json.flag(room, "virtualLan") ? " · 虚拟局域网" : " · 同一 Wi-Fi / 热点");
+                                + (Json.number(room, "relayNetwork") > 0 ? " · 公网联机" : Json.flag(room, "virtualLan") ? " · 虚拟局域网" : " · 同一 Wi-Fi / 热点");
                     }
                     builder.setItems(labels, new DialogInterface.OnClickListener() {
                         @Override public void onClick(DialogInterface dialog, int which) {
                             @SuppressWarnings("unchecked") Map<String, Object> room = (Map<String, Object>) rooms.get(which);
+                            if (Json.number(room, "relayNetwork") > 0) { pickRelayRoom(room); return; }
+                            Relay.joinSession = null;
                             ip.setText(Json.string(room, "hostAddress"));
                             code.setText(Json.string(room, "roomCode"));
                             Online.toast(Json.flag(room, "virtualLan")
@@ -290,6 +344,26 @@ public final class OnlineUi {
                     });
                 }
                 builder.show();
+            }
+            @Override public void failed(String message) { Online.toast(message); }
+        });
+    }
+
+    /** A room hosted through the relay: get a seat in its relay network first, then fill in the fields. */
+    private void pickRelayRoom(final Map<String, Object> room) {
+        final String token = Online.token();
+        final long network = Json.number(room, "relayNetwork");
+        Online.toast("正在连接公网房间…");
+        Online.async(new Online.Work<Relay.Session>() {
+            @Override public Relay.Session run() throws ApiException {
+                return Relay.open(Online.api, Online.SERVER, token, network, null, System.currentTimeMillis());
+            }
+        }, new Online.Done<Relay.Session>() {
+            @Override public void ok(Relay.Session session) {
+                Relay.joinSession = session;
+                ip.setText(Relay.HOST_IP);
+                code.setText(Json.string(room, "roomCode"));
+                Online.toast("已填入公网房间。直接点“加入房间”即可，不需要组网软件。");
             }
             @Override public void failed(String message) { Online.toast(message); }
         });

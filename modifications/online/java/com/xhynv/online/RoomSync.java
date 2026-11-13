@@ -17,6 +17,8 @@ final class RoomSync {
         String address = "";
         int players;
         int limit;
+        /** Body of POST /races plus an "id" entry, while the results of a finished race are on screen. */
+        Map<String, Object> race;
     }
 
     /** Where the login token comes from, and where to report that the server rejected it. */
@@ -34,6 +36,8 @@ final class RoomSync {
     private String roomToken = "";
     private String roomKey = "";
     private long nextRoomAt, nextPlayAt;
+    private long reportedRace = Long.MIN_VALUE;
+    private int raceAttempts;
     /** Short Chinese status for the UI; empty when there is nothing to say. */
     volatile String status = "";
 
@@ -82,6 +86,7 @@ final class RoomSync {
             } else if (!s.hosting) {
                 status = "";
             }
+            if (roomId != 0 && s.race != null && Json.number(s.race, "id") != reportedRace) reportRace(s.race, token);
             if (signedIn && s.playing && now >= nextPlayAt) {
                 nextPlayAt = now + PLAY_BEAT_MS;
                 try {
@@ -100,6 +105,24 @@ final class RoomSync {
                 status = "房间未能显示在在线房间列表：" + e.getMessage();
             }
         }
+    }
+
+    /** Sends a finished race once. Only the host reports, so each race is stored a single time. */
+    private void reportRace(Map<String, Object> race, String token) throws ApiException {
+        long id = Json.number(race, "id");
+        Map<String, Object> body = new java.util.LinkedHashMap<String, Object>(race);
+        body.remove("id");
+        try {
+            api.call("POST", "/races", body, token);
+        } catch (ApiException e) {
+            // Refused as invalid: sending the same data again cannot succeed. Anything else is retried a few times.
+            if (e.status != 400 && ++raceAttempts < 5) {
+                if (e.status == 401) throw e;
+                return;
+            }
+        }
+        reportedRace = id;
+        raceAttempts = 0;
     }
 
     private void closeRoom() {

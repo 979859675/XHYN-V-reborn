@@ -4,8 +4,9 @@
 
 Starts from the same base APK as ../zh-CN/build_zh.py, applies the same translation, then:
   * compiles java/ into a new classes12.dex,
-  * adds two calls into the game's LAN code (see PATCHES below).
-Nothing else in the APK changes.
+  * adds a few calls into the game's LAN code (see PATCHES below),
+  * sets the launcher name (APP_NAME).
+Nothing else in the APK changes. The base may be the original release or this repository's zh-CN release.
 """
 import argparse, json, re, shutil, sys, zipfile
 from pathlib import Path
@@ -15,20 +16,47 @@ sys.path.insert(0, str(HERE.parent / 'zh-CN'))
 import build_zh  # noqa: E402
 
 NEW_DEX = 'classes12.dex'
+APP_NAME = '小春GTA5Online'
+OLD_NAME = 'XHYN V'
+# The released zh-CN build: the original APK with only the translation applied.
+ZH_SHA256 = '8817ffed1f2e8a41fb0d7bbd373b45f71f6edbf44f03b66914a9f1075d0ebfd4'
 
 # (file, text that must occur exactly once, replacement)
 PATCHES = [
-    # A LAN session may only start for a signed-in user, under the character's name.
+    # A LAN session may only start for a signed-in user, under the character's name. The same call
+    # decides whether the session runs over the lobby server's relay.
     ('smali_classes10/com/gtavsource/android/lan/LanSession.smali',
      '.method private static start(Landroid/content/Context;ZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V\n    .locals 10\n',
      '.method private static start(Landroid/content/Context;ZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V\n    .locals 10\n\n'
-     '    invoke-static {p0, p3}, Lcom/xhynv/online/Online;->sessionName(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;\n\n'
+     '    sget-boolean v0, Lcom/gtavsource/android/lan/LanSession;->active:Z\n\n'
+     '    if-nez v0, :online_signed_in\n\n'
+     '    sget-boolean v0, Lcom/gtavsource/android/lan/LanSession;->busy:Z\n\n'
+     '    if-nez v0, :online_signed_in\n\n'
+     '    invoke-static {p0, p3, p1, p2}, Lcom/xhynv/online/Online;->sessionName(Landroid/content/Context;Ljava/lang/String;ZLjava/lang/String;)Ljava/lang/String;\n\n'
      '    move-result-object p3\n\n'
      '    if-nez p3, :online_signed_in\n\n'
-     '    const-string p0, "\\u8bf7\\u5148\\u767b\\u5f55\\u8054\\u673a\\u4e2d\\u5fc3\\u5e76\\u9009\\u62e9\\u89d2\\u8272"\n\n'
+     '    sget-object p0, Lcom/xhynv/online/Online;->refusal:Ljava/lang/String;\n\n'
      '    sput-object p0, Lcom/gtavsource/android/lan/LanSession;->last:Ljava/lang/String;\n\n'
      '    return-void\n\n'
      '    :online_signed_in\n'),
+    # A relayed session never uses the game's VPN ("virtual LAN") mode.
+    ('smali_classes10/com/gtavsource/android/lan/LanSession.smali',
+     '    invoke-static {p0}, Lcom/gtavsource/android/lan/LanSession;->virtualNetwork(Landroid/content/Context;)Z\n\n    move-result v5\n',
+     '    invoke-static {p0}, Lcom/gtavsource/android/lan/LanSession;->virtualNetwork(Landroid/content/Context;)Z\n\n    move-result v5\n\n'
+     '    invoke-static {v5}, Lcom/xhynv/online/Online;->virtualFlag(Z)Z\n\n    move-result v5\n'),
+    # The game socket: a relay socket when the session is relayed, else the usual one.
+    ('smali_classes10/com/gtavsource/android/lan/LanTransport.smali',
+     '    new-instance p9, Ljava/net/DatagramSocket;\n\n    invoke-direct {p9, p8}, Ljava/net/DatagramSocket;-><init>(Ljava/net/SocketAddress;)V\n',
+     '    invoke-static {p8}, Lcom/xhynv/online/Relay;->socket(Ljava/net/SocketAddress;)Ljava/net/DatagramSocket;\n\n    move-result-object p9\n'),
+    # A relay socket reaches the server over any network, so it is not tied to Wi-Fi or a VPN.
+    ('smali_classes10/com/gtavsource/android/lan/LanRouting.smali',
+     '.method static bind(Landroid/content/Context;Ljava/net/DatagramSocket;ZLjava/net/InetAddress;)V\n    .locals 3\n',
+     '.method static bind(Landroid/content/Context;Ljava/net/DatagramSocket;ZLjava/net/InetAddress;)V\n    .locals 3\n\n'
+     '    invoke-static {p1}, Lcom/xhynv/online/Relay;->owns(Ljava/net/DatagramSocket;)Z\n\n'
+     '    move-result v0\n\n'
+     '    if-eqz v0, :online_plain_socket\n\n'
+     '    return-void\n\n'
+     '    :online_plain_socket\n'),
     # Every LAN page gets the lobby card.
     ('smali_classes10/com/gtavsource/android/LanPage.smali',
      '    :cond_7\n    invoke-direct {v0}, Lcom/gtavsource/android/LanPage;->refresh()V\n\n    return-void\n',
@@ -53,14 +81,16 @@ def main():
     parser.add_argument('--android-jar', required=True, type=Path, help='android.jar of API 30 or later')
     parser.add_argument('--server', help='lobby server URL to build in (default: the one in Online.java)')
     parser.add_argument('--keystore', type=Path)
-    parser.add_argument('--key-alias', default='zh')
+    parser.add_argument('--key-alias', default='app')
     parser.add_argument('--password-file', type=Path)
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     run = build_zh.run
     base = args.base_apk.resolve(strict=True)
-    if build_zh.sha(base) != build_zh.BASE_SHA256:
-        parser.error('base APK is not the exact XHYN V 0.3 Preview 2 release')
+    base_sha = build_zh.sha(base)
+    if base_sha not in (build_zh.BASE_SHA256, ZH_SHA256):
+        parser.error('base APK is neither the exact XHYN V 0.3 Preview 2 release nor its zh-CN build')
+    translated = base_sha == ZH_SHA256
     work = args.work_dir.resolve()
     if work.exists():
         parser.error('work directory already exists')
@@ -81,6 +111,7 @@ def main():
     run(args.java, '-jar', args.ecj, '-source', '1.8', '-target', '1.8', '-nowarn', '-encoding', 'UTF-8',
         '-bootclasspath', args.android_jar, '-d', classes, sources, HERE / 'stubs')
     shipped = sorted(str(p) for p in (classes / 'com/xhynv/online').glob('*.class'))
+    shipped += sorted(str(p) for p in (classes / 'com/gtavsource/android/lan').glob('OnlineBridge*.class'))
     assert shipped and not list((classes / 'com/xhynv/online').glob('SyncTest*')), 'unexpected classes'
     dex = work / 'dex'
     dex.mkdir()
@@ -91,8 +122,8 @@ def main():
     # 2. Translation + the two hooks
     dec = work / 'decoded'
     run(args.java, '-jar', args.apktool, 'd', '-r', '-o', dec, base)
-    report = {'base_sha256': build_zh.BASE_SHA256, 'server': server}
-    changed = set(build_zh.patch_smali(dec, report))
+    report = {'base_sha256': base_sha, 'server': server, 'app_name': APP_NAME}
+    changed = set() if translated else set(build_zh.patch_smali(dec, report))
     for name, old, new in PATCHES:
         path = dec / name
         text = path.read_text(encoding='utf-8')
@@ -105,6 +136,24 @@ def main():
     run(args.java, '-jar', args.apktool, 'b', dec, '-o', rebuilt)
     built = zipfile.ZipFile(rebuilt)
     replace = {'assets/xhyn-english.json': payload}
+    if translated:
+        assert zipfile.ZipFile(base).read('assets/xhyn-english.json') == payload, 'base carries a different dictionary'
+
+    # The launcher name sits in the binary manifest. Rebuild the manifest alone from its decoded
+    # form with that one attribute changed; resources and everything else stay the base's own.
+    named = work / 'named'
+    run(args.java, '-jar', args.apktool, 'd', '-s', '-o', named, base)
+    manifest = named / 'AndroidManifest.xml'
+    text = manifest.read_text(encoding='utf-8')
+    label = 'android:label="%s"' % OLD_NAME
+    assert text.count(label) == 1, 'application label not found exactly once'
+    manifest.write_text(text.replace(label, 'android:label="%s"' % APP_NAME), encoding='utf-8')
+    run(args.java, '-jar', args.apktool, 'b', named, '-o', work / 'named.apk')
+    binary = zipfile.ZipFile(work / 'named.apk').read('AndroidManifest.xml')
+    before = zipfile.ZipFile(base).read('AndroidManifest.xml')
+    grew = 2 * (len(APP_NAME) - len(OLD_NAME))
+    assert APP_NAME.encode('utf-16-le') in binary and 0 <= len(binary) - len(before) - grew < 4, 'manifest changed by more than the name'
+    replace['AndroidManifest.xml'] = binary
     for folder in sorted(changed):
         name = 'classes.dex' if folder == 'smali' else folder.replace('smali_', '') + '.dex'
         replace[name] = built.read(name)

@@ -126,6 +126,100 @@ public final class SyncTest {
         sync.tick(s, now += 60000);
         check(rejected[0] && sync.roomId() == 0, "a rejected token is reported to the account");
 
+        // Race reporting: only while a room is listed, and each race once.
+        current[0] = token;
+        rejected[0] = false;
+        s = new RoomSync.Snapshot();
+        s.hosting = true; s.code = "555666"; s.limit = 4; s.players = 2; s.address = "192.168.1.9";
+        sync.tick(s, now += 60000);
+        java.util.List<Object> results = new java.util.ArrayList<Object>();
+        results.add(Json.of("name", hostName, "finished", true, "position", 1, "timeMs", 61234));
+        results.add(Json.of("name", "路人" + suffix, "finished", false, "reason", "人物死亡"));
+        s.race = Json.of("id", 77L, "courseName", "测试赛道" + suffix, "mode", "circuit", "laps", 2, "checkpoints", 5, "results", results);
+        sync.tick(s, now += 5000);
+        sync.tick(s, now += 5000);
+        int stored = 0;
+        for (Object item : Json.list(api.call("GET", "/races", null, token), "races")) {
+            @SuppressWarnings("unchecked") Map<String, Object> race = (Map<String, Object>) item;
+            if (("测试赛道" + suffix).equals(Json.string(race, "courseName"))) {
+                stored++;
+                check(Json.number(race, "laps") == 2 && Json.list(race, "results").size() == 2, "race is stored with its results");
+            }
+        }
+        check(stored == 1, "a finished race is reported exactly once, got " + stored);
+        s.race = Json.of("id", 78L, "courseName", "", "mode", "sprint", "results", new java.util.ArrayList<Object>());
+        sync.tick(s, now += 5000);
+        sync.tick(s, now += 5000);
+        check(sync.roomId() != 0, "an invalid race report does not disturb the room listing");
+        s.hosting = false; s.race = null;
+        sync.tick(s, now += 5000);
+
+        // Relay: two game sockets that only know virtual addresses talk through the server.
+        String guestToken = Json.string(api.call("POST", "/auth/register", Json.of("username", "jvmg" + suffix, "password", "long enough pw"), null), "token");
+        api.call("POST", "/characters", Json.of("name", "客人" + suffix), guestToken);
+        Relay.Session hostSession = Relay.open(api, args[0], token, 0, null, 1000);
+        Relay.Session same = Relay.open(api, args[0], token, 0, hostSession, 2000);
+        check(same == hostSession && hostSession.confirmedAt == 2000 && hostSession.fresh(2000 + Relay.FRESH_MS - 1) && !hostSession.fresh(2000 + Relay.FRESH_MS), "refreshing reuses the session object");
+        Relay.Session guestSession = Relay.open(api, args[0], guestToken, hostSession.networkId, null, 1000);
+        check(guestSession.networkId == hostSession.networkId && !java.util.Arrays.equals(guestSession.token, hostSession.token), "guest gets its own token in the host's network");
+        try {
+            Relay.open(api, args[0], guestToken, 987654, null, 0);
+            check(false, "unknown network");
+        } catch (ApiException e) {
+            check(e.status == 404, "joining a network that is gone is a 404: " + e.getMessage());
+        }
+
+        Relay.active = null;
+        java.net.DatagramSocket plain = Relay.socket(null);
+        check(!Relay.owns(plain) && !plain.isBound(), "without a session the game gets a plain unbound socket");
+        plain.close();
+        Relay.active = hostSession;
+        java.net.DatagramSocket hostSocket = Relay.socket(null);
+        Relay.active = guestSession;
+        java.net.DatagramSocket guestSocket = Relay.socket(null);
+        Relay.active = null;
+        check(Relay.owns(hostSocket) && Relay.owns(guestSocket) && !hostSocket.isBound(), "with a session it gets an unbound relay socket");
+        hostSocket.bind(new java.net.InetSocketAddress(0));
+        guestSocket.bind(new java.net.InetSocketAddress(0));
+        hostSocket.setSoTimeout(1500);
+        guestSocket.setSoTimeout(1500);
+        Thread.sleep(600);   // the keep-alive registers the host before anyone has written to it
+
+        byte[] hello = "HELLO 你好".getBytes("UTF-8");
+        java.net.InetAddress hostVirtual = java.net.InetAddress.getByName("10.77.0.1");
+        guestSocket.send(new java.net.DatagramPacket(hello, hello.length, hostVirtual, hostSocket.getLocalPort()));
+        byte[] buffer = new byte[1200];
+        java.net.DatagramPacket got = new java.net.DatagramPacket(buffer, buffer.length);
+        hostSocket.receive(got);
+        check(new String(buffer, 0, got.getLength(), "UTF-8").equals("HELLO 你好"), "host receives the guest's payload unchanged");
+        check(got.getAddress().getHostAddress().equals("10.77.0.2") && got.getPort() == guestSocket.getLocalPort(), "it appears to come from the guest's virtual address: " + got.getSocketAddress());
+
+        // Reply to the address the packet came from, as the game does, with a full-size packet at an offset.
+        byte[] big = new byte[1300];
+        for (int i = 0; i < big.length; i++) big[i] = (byte) (i * 7);
+        hostSocket.send(new java.net.DatagramPacket(big, 100, 1200, got.getSocketAddress()));
+        byte[] target = new byte[1210];
+        java.net.DatagramPacket reply = new java.net.DatagramPacket(target, 10, 1200);
+        guestSocket.receive(reply);
+        boolean intact = reply.getLength() == 1200 && reply.getOffset() == 10;
+        for (int i = 0; intact && i < 1200; i++) intact = target[10 + i] == big[100 + i];
+        check(intact && reply.getAddress().equals(hostVirtual) && reply.getPort() == hostSocket.getLocalPort(), "a 1200-byte reply survives offsets in both directions");
+
+        reply.setLength(1200);
+        byte[] bye = { 1, 2, 3 };
+        hostSocket.send(new java.net.DatagramPacket(bye, 3, java.net.InetAddress.getByName("255.255.255.255"), guestSocket.getLocalPort()));
+        guestSocket.receive(reply);
+        check(reply.getLength() == 3 && target[10] == 1 && target[12] == 3, "broadcast reaches the other member; the packet object can be reused");
+
+        boolean timedOut = false;
+        try { hostSocket.receive(got); } catch (java.net.SocketTimeoutException e) { timedOut = true; }
+        check(timedOut, "receive still times out like a plain socket");
+        boolean tooLarge = false;
+        try { hostSocket.send(new java.net.DatagramPacket(new byte[1401], 1401, hostVirtual, 1)); } catch (java.io.IOException e) { tooLarge = true; }
+        check(tooLarge, "oversized packets are refused");
+        hostSocket.close();
+        guestSocket.close();
+
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);
     }
