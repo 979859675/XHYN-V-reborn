@@ -196,13 +196,24 @@ def patch_smali(dec, report):
     return changed
 
 
-def repack(base, out, replace):
-    """Copy `base` entry by entry (raw bytes), replacing only `replace`; drop the old signature."""
+def repack(base, out, replace, add=None):
+    """Copy `base` entry by entry (raw bytes), replacing only `replace`; drop the old signature.
+
+    `add` maps new entry names to data; they are appended, compressed.
+    """
     source = zipfile.ZipFile(base)
     raw = open(base, 'rb')
     central = []
+    add = dict(add or {})
+    assert not set(add) & set(source.namelist()), 'added entries must be new'
+    extras = []
+    for name in sorted(add):
+        info = zipfile.ZipInfo(name, date_time=(1981, 1, 1, 1, 1, 2))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        extras.append(info)
+    replace.update(add)
     with open(out, 'wb') as target:
-        for info in source.infolist():
+        for info in source.infolist() + extras:
             name = info.filename
             if re.fullmatch(r'META-INF/(MANIFEST\.MF|[^/]+\.(SF|RSA|DSA|EC))', name):
                 continue
