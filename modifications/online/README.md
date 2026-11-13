@@ -52,3 +52,13 @@ python3 build_online.py --base-apk XHYN-V-0.3-Preview2.apk --work-dir work \
 - `build_online.py` 的 `--base-apk` 现在也接受本仓库发布的汉化版 APK。
 
 `test/SyncTest.java` 对着本地启动的服务器测试房间同步、成绩上报和中转套接字（不需要 Android）。
+
+
+## online3 新增
+
+- 启动登录：`GameMenuActivity.onResume` 末尾调用 `OnlineUi.startup(activity)`，每次启动 app 只处理一次。
+- 测试人机：人机不是服务器模拟的，而是**房主手机上再开一个游戏自带的 `LanTransport`**（`OnlineBridge.startBot`），
+  它拿一个独立的中转位置（`POST /relay/bot`），经服务器加入自己的房间，所以走的是和真实远程玩家完全相同的路径。
+  服务器只记录“要几个人机”，房主在心跳响应里得知。镜像人机把房主自己发出的状态帧（`LanSession$1.snapshot` 处截取）
+  改掉位置、去掉世界 / 车辆 / 伤害部分后发回去；改出来的帧先过游戏自己的 `LanFrame.valid`，不合法就不发。
+- 诊断：`OnlineBridge.diagnostics()` 把 `LanSession.State` 的状态文字和原生层 `stats` 数组随心跳上报。

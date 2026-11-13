@@ -294,6 +294,14 @@ function createApp(config, db, relay = createRelay(config)) {
     res.json({ relay: joined });
   }));
 
+  api.post('/relay/bot', authed(async (req, res) => {
+    relayReady();
+    const joined = relay.bot(Number(req.user.id), whole(req.body.index, '人机编号', 1, MAX_BOTS));
+    if (joined === 'full') throw new ApiError(409, 'relay_full', '房间的公网联机名额已满');
+    if (!joined) throw new ApiError(404, 'relay_gone', '请先用公网联机创建房间');
+    res.json({ relay: joined });
+  }));
+
   // ---- room lobby -----------------------------------------------------------
   // A room whose address is the relay's host address, and whose host has a live relay network, is joined through the relay.
   const publicRoom = (row) => ({ id: Number(row.id), title: row.title, hostName: row.host_name, hostAddress: row.host_address,
@@ -301,10 +309,24 @@ function createApp(config, db, relay = createRelay(config)) {
     gameVersion: row.game_version, createdAt: Number(row.created_at),
     relayNetwork: row.host_address === HOST_IP ? relay.networkOf(Number(row.user_id)) : null });
   const freshSince = () => now() - config.roomTimeoutSeconds;
+  // Test bots asked for and the host's last diagnostic line, per room. Not worth a schema change: both are
+  // only meaningful while the room is live, and the host re-reads them on every heartbeat.
+  const MAX_BOTS = 3;
+  const extras = new Map();
+  const extra = (id) => extras.get(Number(id)) || { bots: 0, mirror: false, debug: '' };
+  const roomFor = (row, viewer) => {
+    const more = extra(row.id);
+    const room = { ...publicRoom(row), bots: more.bots, botMirror: more.mirror };
+    if (viewer.is_admin || Number(row.user_id) === Number(viewer.id)) room.debug = more.debug;
+    return room;
+  };
 
-  api.get('/rooms', authed(async (_req, res) => {
+  api.get('/rooms', authed(async (req, res) => {
     await db.run('DELETE FROM rooms WHERE heartbeat_at < ?', [freshSince()]);
-    res.json({ rooms: (await db.all('SELECT * FROM rooms ORDER BY created_at DESC LIMIT 100')).map(publicRoom) });
+    const rows = await db.all('SELECT * FROM rooms ORDER BY created_at DESC LIMIT 100');
+    const live = new Set(rows.map((row) => Number(row.id)));
+    for (const id of extras.keys()) if (!live.has(id)) extras.delete(id);
+    res.json({ rooms: rows.map((row) => roomFor(row, req.user)) });
   }));
 
   // Creating a room replaces the caller's previous one: a phone hosts one room.
@@ -330,7 +352,7 @@ function createApp(config, db, relay = createRelay(config)) {
         [req.user.id, ...values, stamp, stamp]);
       return result.insertId;
     });
-    res.status(201).json({ room: publicRoom(await db.get('SELECT * FROM rooms WHERE id = ?', [id])), heartbeatSeconds: 30 });
+    res.status(201).json({ room: publicRoom(await db.get('SELECT * FROM rooms WHERE id = ?', [id])), heartbeatSeconds: 10 });
   }));
 
   api.post('/rooms/:id/heartbeat', authed(async (req, res) => {
@@ -340,7 +362,20 @@ function createApp(config, db, relay = createRelay(config)) {
     if (req.body.maxPlayers !== undefined) { sets.push('max_players = ?'); params.push(whole(req.body.maxPlayers, '人数上限', 2, 10)); }
     const result = await db.run(`UPDATE rooms SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`, [...params, Number(req.params.id) || 0, req.user.id]);
     if (!result.changes) throw new ApiError(404, 'not_found', '房间不存在或已过期，请重新创建');
-    res.json({ ok: true });
+    const more = extra(req.params.id);
+    if (typeof req.body.debug === 'string') extras.set(Number(req.params.id), { ...more, debug: req.body.debug.slice(0, 400) });
+    res.json({ ok: true, bots: more.bots, botMirror: more.mirror });
+  }));
+
+  // Test bots: the host's phone runs them, so this only records how many are wanted. Host or administrator.
+  api.post('/rooms/:id/bots', authed(async (req, res) => {
+    const id = Number(req.params.id) || 0;
+    const row = await db.get('SELECT * FROM rooms WHERE id = ? AND heartbeat_at >= ?', [id, freshSince()]);
+    if (!row) throw new ApiError(404, 'not_found', '房间不存在或已过期');
+    if (!req.user.is_admin && Number(row.user_id) !== Number(req.user.id)) throw new ApiError(403, 'forbidden', '只有房主或管理员可以设置人机');
+    if (row.host_address !== HOST_IP) throw bad('只有用“公网联机”创建的房间可以加人机', 'not_relayed');
+    extras.set(id, { ...extra(id), bots: whole(req.body.count, '人机数量', 0, MAX_BOTS), mirror: !!req.body.mirror });
+    res.json({ room: roomFor(row, req.user) });
   }));
 
   api.delete('/rooms/:id', authed(async (req, res) => {

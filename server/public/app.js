@@ -119,16 +119,28 @@
       const title = el('div', { class: 'title' }, room.title);
       if (room.virtualLan) title.append(el('span', { class: 'tag warn' }, '虚拟局域网'));
       if (room.players >= room.maxPlayers) title.append(el('span', { class: 'tag bad' }, '已满'));
+      if (room.relayNetwork) title.append(el('span', { class: 'tag' }, '公网联机'));
+      if (room.bots) title.append(el('span', { class: 'tag warn' }, `人机 ${room.bots}${room.botMirror ? '（镜像）' : ''}`));
+      const setBots = (count, mirror) => (e) => act(e.target, async () => {
+        await api('POST', `/rooms/${room.id}/bots`, { count, mirror }); await loadRooms();
+        toast('已设置。房主手机会在 10 秒内照做（需要新版客户端）');
+      });
+      const botButtons = (user.isAdmin || room.debug !== undefined) && room.relayNetwork ? [
+        el('button', { class: 'ghost', onclick: setBots(Math.min(3, room.bots + 1), room.botMirror) }, '加人机'),
+        el('button', { class: 'ghost', onclick: setBots(Math.max(0, room.bots - 1), room.botMirror) }, '减人机'),
+        el('button', { class: 'ghost', onclick: setBots(room.bots, !room.botMirror) }, room.botMirror ? '关镜像' : '开镜像（实验）'),
+      ] : [];
       const copy = el('button', { class: 'ghost', onclick: async () => {
         try { await navigator.clipboard.writeText(`${room.hostAddress} ${room.roomCode}`); toast('已复制房主 IP 和房间码'); }
         catch { toast('复制失败，请手动抄写'); }
       } }, '复制');
       list.append(el('div', { class: 'item' },
-        el('div', { class: 'grow' }, title, el('div', { class: 'sub' }, `房主 ${room.hostName} · ${room.players} / ${room.maxPlayers} 人`)),
+        el('div', { class: 'grow' }, title, el('div', { class: 'sub' }, `房主 ${room.hostName} · ${room.players} / ${room.maxPlayers} 人`),
+          ...(room.debug ? [el('div', { class: 'sub' }, `诊断：${room.debug}`)] : [])),
         el('div', { class: 'join' },
           el('div', {}, el('small', {}, '房主 IP'), el('b', {}, room.hostAddress)),
           el('div', {}, el('small', {}, '房间码'), el('b', {}, room.roomCode))),
-        el('div', { class: 'actions' }, copy,
+        el('div', { class: 'actions' }, copy, ...botButtons,
           ...(user.isAdmin ? [el('button', { class: 'danger', onclick: (e) => act(e.target, async () => { await api('DELETE', `/rooms/${room.id}`); await loadRooms(); }) }, '移除')] : []))));
     }
   }

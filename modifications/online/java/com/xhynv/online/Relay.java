@@ -31,11 +31,15 @@ public final class Relay {
     /** The session the next game socket will use; null means plain LAN. */
     static volatile Session active;
 
+    /** Overrides {@link #active} for a socket created on this thread: a test bot has its own seat in the network. */
+    static final ThreadLocal<Session> NEXT = new ThreadLocal<Session>();
+
     private Relay() {}
 
     /** Called by the game in place of {@code new DatagramSocket(address)}. */
     public static DatagramSocket socket(SocketAddress address) throws SocketException {
-        Session session = active;
+        Session session = NEXT.get();
+        if (session == null) session = active;
         return session == null ? new DatagramSocket(address) : new RelaySocket(address, session);
     }
 
@@ -47,9 +51,12 @@ public final class Relay {
      * Reusing the object lets a socket that is already open pick up a replaced token.
      */
     static Session open(Api api, String serverUrl, String token, long joinNetwork, Session into, long now) throws ApiException {
-        Map<String, Object> reply = joinNetwork > 0
-                ? api.call("POST", "/relay/join", Json.of("networkId", joinNetwork), token)
-                : api.call("POST", "/relay/host", Api.empty(), token);
+        return joinNetwork > 0 ? open(api, serverUrl, token, "/relay/join", Json.of("networkId", joinNetwork), into, now)
+                : open(api, serverUrl, token, "/relay/host", Api.empty(), into, now);
+    }
+
+    static Session open(Api api, String serverUrl, String token, String path, Map<String, Object> body, Session into, long now) throws ApiException {
+        Map<String, Object> reply = api.call("POST", path, body, token);
         Map<String, Object> relay = Json.map(reply, "relay");
         String hex = Json.string(relay, "token");
         int port = (int) Json.number(relay, "port");

@@ -84,6 +84,17 @@ function createRelay(config) {
     return describe(member);
   }
 
+  /**
+   * An extra member of the caller's own network, for a test bot that runs on the host's phone.
+   * Returns null without a network, 'full' if there is no free address. Asking again returns the same member.
+   */
+  function bot(ownerId, index) {
+    const network = byOwner.get(ownerId);
+    if (!network) return null;
+    network.activeAt = now();
+    return join(`bot:${ownerId}:${index}`, network.id);
+  }
+
   /** Id of the live network owned by this user, or null. */
   function networkOf(userId) {
     const network = byOwner.get(userId);
@@ -180,7 +191,7 @@ function createRelay(config) {
     });
   }
 
-  return { host, join, networkOf, closeFor, start, close, stats,
+  return { host, join, bot, networkOf, closeFor, start, close, stats,
     get port() { return port; }, get networks() { return networks.size; }, HOST_IP };
 }
 

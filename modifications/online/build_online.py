@@ -57,6 +57,16 @@ PATCHES = [
      '    if-eqz v0, :online_plain_socket\n\n'
      '    return-void\n\n'
      '    :online_plain_socket\n'),
+    # Mirror test bots replay the frames the local player sends.
+    ('smali_classes10/com/gtavsource/android/lan/LanSession$1.smali',
+     '    invoke-static {p0}, Lcom/gtavsource/android/lan/LanNative;->snapshot(I)[B\n\n    move-result-object p0\n',
+     '    invoke-static {p0}, Lcom/gtavsource/android/lan/LanNative;->snapshot(I)[B\n\n    move-result-object p0\n\n'
+     '    invoke-static {p0}, Lcom/gtavsource/android/lan/OnlineBridge;->observe([B)V\n'),
+    # Opening the app asks a signed-out user to sign in (once, dismissable).
+    ('smali/com/gtavsource/android/GameMenuActivity.smali',
+     '    invoke-static {p0}, Lcom/gtavsource/android/XhynV02Settings;->resume(Lcom/gtavsource/android/GameMenuActivity;)V\n\n    return-void\n',
+     '    invoke-static {p0}, Lcom/gtavsource/android/XhynV02Settings;->resume(Lcom/gtavsource/android/GameMenuActivity;)V\n\n'
+     '    invoke-static {p0}, Lcom/xhynv/online/OnlineUi;->startup(Landroid/app/Activity;)V\n\n    return-void\n'),
     # Every LAN page gets the lobby card.
     ('smali_classes10/com/gtavsource/android/LanPage.smali',
      '    :cond_7\n    invoke-direct {v0}, Lcom/gtavsource/android/LanPage;->refresh()V\n\n    return-void\n',

@@ -250,7 +250,9 @@ public final class Online {
                             if (relayEnabled() && !token.isEmpty() && !characterName().isEmpty()) refreshHostRelay(token);
                         }
                         showLanStatus();
-                        sync.tick(snapshot(), now);
+                        RoomSync.Snapshot snapshot = snapshot();
+                        sync.tick(snapshot, now);
+                        manageBots(snapshot, sync.bots, sync.botMirror);
                         String status = sync.status;
                         if (!status.equals(shown)) {
                             shown = status;
@@ -269,6 +271,38 @@ public final class Online {
         thread.start();
     }
 
+    private static final Relay.Session[] botSessions = new Relay.Session[3];
+
+    /**
+     * Runs the test bots the server asked for. They only exist for relayed rooms: each bot gets its own
+     * seat in the host's relay network and joins the room through the server like a remote player.
+     */
+    private static void manageBots(RoomSync.Snapshot s, int wanted, boolean mirror) {
+        boolean relayed = s.hosting && Relay.active != null && Relay.active == Relay.hostSession;
+        String token = token();
+        if (!relayed || token.isEmpty()) wanted = 0;
+        for (int index = 1; index <= 3; index++) {
+            try {
+                if (index > wanted) {
+                    OnlineBridge.stopBot(index);
+                    continue;
+                }
+                if (OnlineBridge.botAlive(index, s.code)) continue;
+                botSessions[index - 1] = Relay.open(api, SERVER, token, "/relay/bot", Json.of("index", index),
+                        botSessions[index - 1], System.currentTimeMillis());
+                Relay.NEXT.set(botSessions[index - 1]);
+                try {
+                    OnlineBridge.startBot(index, "人机" + index, Relay.HOST_IP, s.code, mirror);
+                } finally {
+                    Relay.NEXT.remove();
+                }
+            } catch (Throwable ignored) {
+                // Tried again on the next tick; the diagnostic line shows the bot's state.
+            }
+        }
+        try { OnlineBridge.setMirror(mirror); } catch (Throwable ignored) { }
+    }
+
     private static RoomSync.Snapshot snapshot() {
         RoomSync.Snapshot s = new RoomSync.Snapshot();
         LanSession.State state = LanSession.state();
@@ -281,6 +315,10 @@ public final class Online {
             boolean relayed = Relay.active != null && Relay.active == Relay.hostSession;
             s.virtualLan = !relayed && state.virtualNetwork;
             s.address = relayed ? Relay.HOST_IP : address(state.virtualNetwork);
+            try {
+                s.debug = OnlineBridge.diagnostics();
+            } catch (Throwable ignored) {
+            }
             try {
                 s.race = OnlineBridge.finishedRace();
             } catch (Throwable ignored) {

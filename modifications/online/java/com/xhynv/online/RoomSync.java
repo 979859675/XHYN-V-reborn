@@ -19,7 +19,13 @@ final class RoomSync {
         int limit;
         /** Body of POST /races plus an "id" entry, while the results of a finished race are on screen. */
         Map<String, Object> race;
+        /** Diagnostic line sent with the heartbeat. */
+        String debug = "";
     }
+
+    /** Test bots the server last asked this room's host to run. */
+    volatile int bots;
+    volatile boolean botMirror;
 
     /** Where the login token comes from, and where to report that the server rejected it. */
     interface Account {
@@ -27,7 +33,7 @@ final class RoomSync {
         void rejected();
     }
 
-    static final long ROOM_BEAT_MS = 30_000, PLAY_BEAT_MS = 60_000, RETRY_MS = 10_000;
+    static final long ROOM_BEAT_MS = 10_000, PLAY_BEAT_MS = 60_000, RETRY_MS = 10_000;
 
     private final Api api;
     private final Account account;
@@ -75,8 +81,10 @@ final class RoomSync {
                 } else if (now >= nextRoomAt) {
                     nextRoomAt = now + ROOM_BEAT_MS;
                     try {
-                        api.call("POST", "/rooms/" + roomId + "/heartbeat", Json.of(
-                                "players", clamp(s.players, 1, 10), "maxPlayers", clamp(s.limit, 2, 10)), token);
+                        Map<String, Object> beat = api.call("POST", "/rooms/" + roomId + "/heartbeat", Json.of(
+                                "players", clamp(s.players, 1, 10), "maxPlayers", clamp(s.limit, 2, 10), "debug", s.debug == null ? "" : s.debug), token);
+                        bots = clamp((int) Json.number(beat, "bots"), 0, 3);
+                        botMirror = Json.flag(beat, "botMirror");
                     } catch (ApiException e) {
                         if (e.status != 404) throw e;
                         roomId = 0;          // expired on the server; list it again on the next tick
@@ -86,6 +94,7 @@ final class RoomSync {
             } else if (!s.hosting) {
                 status = "";
             }
+            if (roomId == 0) bots = 0;
             if (roomId != 0 && s.race != null && Json.number(s.race, "id") != reportedRace) reportRace(s.race, token);
             if (signedIn && s.playing && now >= nextPlayAt) {
                 nextPlayAt = now + PLAY_BEAT_MS;

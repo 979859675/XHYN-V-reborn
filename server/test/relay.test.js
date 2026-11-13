@@ -185,3 +185,32 @@ test('relay rooms are flagged in the lobby; the relay needs a character and can 
   assert.equal(reply.status, 503);
   await new Promise((resolve) => off.close(resolve));
 });
+
+test('test bots: host or admin sets the count, the host reads it on heartbeat and gets bot seats', async () => {
+  const host = await player('bothost');
+  const other = await player('botother');
+  assert.equal((await call('POST', '/api/relay/bot', host, { index: 1 })).status, 404);
+  const mine = (await call('POST', '/api/relay/host', host, {})).data.relay;
+  const lan = (await call('POST', '/api/rooms', host, { hostAddress: '192.168.1.5', roomCode: '123456' })).data.room;
+  assert.equal((await call('POST', `/api/rooms/${lan.id}/bots`, host, { count: 1 })).status, 400);
+  const room = (await call('POST', '/api/rooms', host, { hostAddress: '10.77.0.1', roomCode: '123456' })).data.room;
+  assert.equal(room.relayNetwork, mine.networkId);
+  assert.equal((await call('POST', `/api/rooms/${room.id}/bots`, other, { count: 2 })).status, 403);
+  assert.equal((await call('POST', `/api/rooms/${room.id}/bots`, host, { count: 4 })).status, 400);
+  const set = await call('POST', `/api/rooms/${room.id}/bots`, host, { count: 2, mirror: true });
+  assert.equal(set.status, 200);
+  assert.equal(set.data.room.bots, 2);
+  const beat = await call('POST', `/api/rooms/${room.id}/heartbeat`, host, { players: 1, debug: '等待本机进入故事模式 stats=1,0' });
+  assert.deepEqual(beat.data, { ok: true, bots: 2, botMirror: true });
+  const find = async (token) => (await call('GET', '/api/rooms', token)).data.rooms.find((r) => r.id === room.id);
+  assert.match((await find(host)).debug, /stats=1,0/);
+  assert.equal((await find(other)).debug, undefined);
+  const one = (await call('POST', '/api/relay/bot', host, { index: 1 })).data.relay;
+  const again = (await call('POST', '/api/relay/bot', host, { index: 1 })).data.relay;
+  const two = (await call('POST', '/api/relay/bot', host, { index: 2 })).data.relay;
+  assert.equal(one.networkId, mine.networkId);
+  assert.equal(one.token, again.token);
+  assert.equal(one.virtualIp, '10.77.0.2');
+  assert.equal(two.virtualIp, '10.77.0.3');
+  assert.notEqual(one.token, mine.token);
+});

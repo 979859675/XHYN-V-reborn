@@ -55,6 +55,67 @@ public final class OnlineUi {
         }
     }
 
+    private static boolean greeted;
+
+    /**
+     * Called when the launcher comes to the front. Once per app start: asks a signed-out user to sign in,
+     * and checks a stored sign-in with the server. The dialog can be dismissed; single-player needs no account.
+     */
+    public static void startup(final Activity activity) {
+        try {
+            Online.init(activity);
+            Online.startReporter();
+            if (greeted || activity == null) return;
+            greeted = true;
+            Online.main.postDelayed(new Runnable() {
+                @Override public void run() {
+                    try {
+                        if (activity.isFinishing() || activity.isDestroyed()) { greeted = false; return; }
+                        final OnlineUi ui = new OnlineUi(activity);
+                        if (!Online.signedIn()) { ui.showLogin(true); return; }
+                        final String token = Online.token();
+                        Online.async(new Online.Work<String>() {
+                            @Override public String run() throws ApiException {
+                                Map<String, Object> mine = Online.api.call("GET", "/characters", null, token);
+                                long active = Json.number(mine, "activeCharacterId");
+                                String found = "";
+                                for (Object item : Json.list(mine, "characters")) {
+                                    @SuppressWarnings("unchecked") Map<String, Object> character = (Map<String, Object>) item;
+                                    if (Json.number(character, "id") == active) found = Json.string(character, "name");
+                                }
+                                Online.setCharacter(found);
+                                return found;
+                            }
+                        }, new Online.Done<String>() {
+                            @Override public void ok(String character) {
+                                if (activity.isFinishing() || activity.isDestroyed()) return;
+                                if (character.isEmpty()) ui.showCharacters();
+                            }
+                            @Override public void failed(String message) {
+                                // Signed out by a rejected token: ask again. A network failure keeps the stored sign-in.
+                                if (!Online.signedIn() && !activity.isFinishing() && !activity.isDestroyed()) ui.showLogin(true);
+                            }
+                        });
+                    } catch (Throwable ignored) {
+                        // The launcher must open even if the dialog cannot.
+                    }
+                }
+            }, 600);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** A card-less instance, for dialogs shown outside the LAN page. */
+    private OnlineUi(Activity activity) {
+        this.activity = activity;
+        this.name = null;
+        this.ip = null;
+        this.code = null;
+        this.status = new TextView(activity);
+        this.message = new TextView(activity);
+        this.buttons = new LinearLayout(activity);
+    }
+
     private OnlineUi(Activity activity, LinearLayout page, EditText name, EditText ip, EditText code) {
         this.activity = activity;
         this.name = name;
@@ -122,6 +183,7 @@ public final class OnlineUi {
                         ? "\n公网联机已开启" + (Online.relayStatus.isEmpty() ? "，正在准备…" : "：" + Online.relayStatus) + "。不在同一网络的玩家也能加入，数据经服务器中转。"
                         : "\n公网联机已关闭：只有同一 Wi-Fi、热点或虚拟局域网里的玩家能加入。";
                 status.setText(line);
+                addButton("人机测试", false, new Runnable() { @Override public void run() { showBots(); } });
             }
             addButton("退出登录", false, new Runnable() { @Override public void run() { signOut(); } });
         }
@@ -159,15 +221,24 @@ public final class OnlineUi {
 
     // ---- sign in ---------------------------------------------------------------------------------
 
-    private void showLogin() {
+    private void showLogin() { showLogin(false); }
+
+    private void showLogin(boolean startup) {
         LinearLayout box = form();
+        if (startup) {
+            TextView hint = new TextView(activity);
+            hint.setText("登录后可以创建和加入联机房间。只玩单机可以点“暂不登录”。");
+            hint.setTextSize(13);
+            hint.setPadding(0, 0, 0, dp(8));
+            box.addView(hint);
+        }
         final EditText user = input(box, "用户名", InputType.TYPE_CLASS_TEXT, 20);
         final EditText password = input(box, "密码（至少 8 位）", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD, 72);
         final EditText invite = input(box, "邀请码（仅注册时需要，没有可留空）", InputType.TYPE_CLASS_TEXT, 64);
         final TextView error = errorLine(box);
         user.setText(Online.username());
         final AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("登录联机中心").setView(box)
-                .setPositiveButton("登录", null).setNeutralButton("注册", null).setNegativeButton("取消", null).create();
+                .setPositiveButton("登录", null).setNeutralButton("注册", null).setNegativeButton(startup ? "暂不登录" : "取消", null).create();
         dialog.show();
         // Set after show() so a failed attempt keeps the dialog and what was typed.
         View.OnClickListener submit = new View.OnClickListener() {
@@ -347,6 +418,33 @@ public final class OnlineUi {
             }
             @Override public void failed(String message) { Online.toast(message); }
         });
+    }
+
+    /** Test bots for the caller's own relayed room. The same setting is on the website's room list. */
+    private void showBots() {
+        final String token = Online.token();
+        final String[] labels = { "不要人机", "1 个人机", "2 个人机", "3 个人机", "1 个镜像人机（实验）" };
+        new AlertDialog.Builder(activity).setTitle("人机测试（需先用公网联机创建房间）")
+                .setItems(labels, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface dialog, final int which) {
+                        Online.async(new Online.Work<String>() {
+                            @Override public String run() throws ApiException {
+                                String mine = Online.characterName();
+                                for (Object item : Json.list(Online.api.call("GET", "/rooms", null, token), "rooms")) {
+                                    @SuppressWarnings("unchecked") Map<String, Object> room = (Map<String, Object>) item;
+                                    if (!mine.equals(Json.string(room, "hostName")) || !room.containsKey("debug")) continue;
+                                    Online.api.call("POST", "/rooms/" + Json.number(room, "id") + "/bots",
+                                            Json.of("count", which == 4 ? 1 : which, "mirror", which == 4), token);
+                                    return which == 0 ? "人机会在 10 秒内离开" : "人机会在 10～20 秒内加入房间";
+                                }
+                                throw new ApiException(404, "没有找到你的房间。请先创建房间，等卡片显示“房间已显示在在线房间列表”。");
+                            }
+                        }, new Online.Done<String>() {
+                            @Override public void ok(String message) { Online.toast(message); }
+                            @Override public void failed(String message) { Online.toast(message); }
+                        });
+                    }
+                }).setNegativeButton("取消", null).show();
     }
 
     /** A room hosted through the relay: get a seat in its relay network first, then fill in the fields. */

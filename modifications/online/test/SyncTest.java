@@ -92,7 +92,7 @@ public final class SyncTest {
 
         s.players = 3;
         sync.tick(s, now += 5000);
-        check(Json.number(room(api, token, hostName), "players") == 1, "no heartbeat before 30 s");
+        check(Json.number(room(api, token, hostName), "players") == 1, "no heartbeat before 10 s");
         sync.tick(s, now += 30000);
         check(Json.number(room(api, token, hostName), "players") == 3, "heartbeat updates the player count");
 
@@ -154,6 +154,38 @@ public final class SyncTest {
         s.hosting = false; s.race = null;
         sync.tick(s, now += 5000);
 
+        // Test bots: the count set on the server reaches the host with its next heartbeat, with the diagnostic line going up.
+        Relay.Session mine = Relay.open(api, args[0], token, 0, null, 1000);
+        s = new RoomSync.Snapshot();
+        s.hosting = true; s.code = "777888"; s.limit = 4; s.players = 1; s.address = Relay.HOST_IP; s.debug = "诊断 stats=[1,0]";
+        sync.tick(s, now += 60000);
+        check(sync.bots == 0, "no bots unless asked");
+        api.call("POST", "/rooms/" + sync.roomId() + "/bots", Json.of("count", 2, "mirror", true), token);
+        sync.tick(s, now += 10000);
+        check(sync.bots == 2 && sync.botMirror, "the host learns the wanted bots from the heartbeat");
+        check("诊断 stats=[1,0]".equals(Json.string(room(api, token, hostName), "debug")), "the diagnostic line is stored for the host");
+        Relay.Session bot = Relay.open(api, args[0], token, "/relay/bot", Json.of("index", 1), null, 1000);
+        check(bot.networkId == mine.networkId && !java.util.Arrays.equals(bot.token, mine.token), "a bot gets its own seat in the host's network");
+        Relay.active = mine;
+        Relay.NEXT.set(bot);
+        java.net.DatagramSocket botSocket = Relay.socket(null);
+        Relay.NEXT.remove();
+        java.net.DatagramSocket ownSocket = Relay.socket(null);
+        Relay.active = null;
+        botSocket.bind(new java.net.InetSocketAddress(0));
+        ownSocket.bind(new java.net.InetSocketAddress(0));
+        ownSocket.setSoTimeout(1500);
+        Thread.sleep(600);
+        botSocket.send(new java.net.DatagramPacket(new byte[] { 9 }, 1, java.net.InetAddress.getByName("10.77.0.1"), ownSocket.getLocalPort()));
+        java.net.DatagramPacket fromBot = new java.net.DatagramPacket(new byte[16], 16);
+        ownSocket.receive(fromBot);
+        check(fromBot.getAddress().getHostAddress().equals("10.77.0.2"), "the bot's packets reach the host from the bot's own address");
+        botSocket.close();
+        ownSocket.close();
+        s.hosting = false;
+        sync.tick(s, now += 5000);
+        check(sync.bots == 0, "bots stop with the room");
+
         // Relay: two game sockets that only know virtual addresses talk through the server.
         String guestToken = Json.string(api.call("POST", "/auth/register", Json.of("username", "jvmg" + suffix, "password", "long enough pw"), null), "token");
         api.call("POST", "/characters", Json.of("name", "客人" + suffix), guestToken);
@@ -192,7 +224,7 @@ public final class SyncTest {
         java.net.DatagramPacket got = new java.net.DatagramPacket(buffer, buffer.length);
         hostSocket.receive(got);
         check(new String(buffer, 0, got.getLength(), "UTF-8").equals("HELLO 你好"), "host receives the guest's payload unchanged");
-        check(got.getAddress().getHostAddress().equals("10.77.0.2") && got.getPort() == guestSocket.getLocalPort(), "it appears to come from the guest's virtual address: " + got.getSocketAddress());
+        check(got.getAddress().getHostAddress().startsWith("10.77.0.") && !got.getAddress().getHostAddress().equals("10.77.0.1") && got.getPort() == guestSocket.getLocalPort(), "it appears to come from the guest's virtual address: " + got.getSocketAddress());
 
         // Reply to the address the packet came from, as the game does, with a full-size packet at an offset.
         byte[] big = new byte[1300];

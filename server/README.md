@@ -83,7 +83,7 @@ npm test
 | `POST /play/heartbeat` | 在房间内约每分钟调用一次，累计在线时长 |
 | `GET /rooms` | 在线房间列表（含房主 IP 和房间码，需登录） |
 | `POST /rooms` | 房主上报：`{hostAddress, roomCode, title?, virtualLan?, maxPlayers?, gameVersion?}` |
-| `POST /rooms/:id/heartbeat` | 房主每 30 秒调用：`{players, maxPlayers?}`；90 秒没心跳房间自动消失 |
+| `POST /rooms/:id/heartbeat` | 房主每 10 秒调用：`{players, maxPlayers?, debug?}` → `{ok, bots, botMirror}`；90 秒没心跳房间自动消失 |
 | `DELETE /rooms/:id` | 房主关闭房间 |
 | `POST /races` | 房主上报比赛：`{courseName, mode: "sprint"\|"circuit", laps?, checkpoints?, results:[{name, finished, position?, timeMs?, reason?}]}` |
 | `GET /races` | 最近 20 场比赛 |
@@ -91,6 +91,8 @@ npm test
 | `GET /me/stats` | 我的角色战绩 |
 | `POST /relay/host` | 房主申请（或续期）一个中转网络 → `{relay:{networkId, token, virtualIp, hostIp, port}}` |
 | `POST /relay/join` | `{networkId}` 加入房主的中转网络，返回同上 |
+| `POST /relay/bot` | `{index: 1~3}` 房主为人机申请中转网络里的一个位置 |
+| `POST /rooms/:id/bots` | 房主或管理员：`{count: 0~3, mirror?}` 设置测试人机数量；房主手机在下次心跳时得知 |
 | `GET /admin/users` | 管理员：用户列表 |
 | `POST /admin/users/:id/ban` | 管理员：`{banned: true\|false}` |
 
