@@ -24,3 +24,8 @@ __pycache__/
 !releases/0.2-hotfix1/XHYN-V-0.2-Hotfix1.apk
 
 !releases/0.2-hotfix2/XHYN-V-0.2-Hotfix2.apk
+
+# Online server: dependencies, local data and secrets
+server/node_modules/
+server/data/
+server/.env

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XHYN V 联机中心</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="mark">V</span><span>XHYN V 联机中心</span></div>
+  <div class="who" id="who" hidden><span id="who-name"></span><button class="ghost" id="logout">退出登录</button></div>
+</header>
+
+<main id="auth" class="auth" hidden>
+  <section class="card">
+    <div class="switch" role="tablist">
+      <button id="tab-login" class="on" role="tab">登录</button>
+      <button id="tab-register" role="tab">注册</button>
+    </div>
+    <form id="auth-form" autocomplete="on">
+      <label>用户名<input id="username" name="username" autocomplete="username" required maxlength="20"></label>
+      <label>密码<input id="password" name="password" type="password" autocomplete="current-password" required maxlength="72"></label>
+      <label id="invite-row" hidden>邀请码<input id="invite" name="invite" maxlength="64"></label>
+      <p class="hint" id="auth-hint">用户名 3～20 位，可用中文、字母、数字、下划线；密码至少 8 位。</p>
+      <p class="error" id="auth-error" role="alert"></p>
+      <button class="primary" id="auth-submit">登录</button>
+    </form>
+  </section>
+  <p class="note">非官方的玩家自建服务，与 Rockstar Games 无关。需要自备正版 GTA V。</p>
+</main>
+
+<div id="app" hidden>
+  <nav class="tabs" id="tabs">
+    <button data-view="rooms" class="on">在线房间</button>
+    <button data-view="characters">我的角色</button>
+    <button data-view="board">排行榜</button>
+    <button data-view="races">最近比赛</button>
+    <button data-view="account">账号</button>
+    <button data-view="admin" id="admin-tab" hidden>管理</button>
+  </nav>
+  <p class="error banner" id="app-error" role="alert"></p>
+  <main>
+    <section id="view-rooms" class="view">
+      <div class="row-head"><h2>在线房间</h2><button class="ghost" id="rooms-refresh">刷新</button></div>
+      <p class="hint">房主在游戏里创建房间后会显示在这里。把房主 IP 和房间码填进游戏的“加入房间”即可。标着“虚拟局域网”的房间需要先连上同一个组网。</p>
+      <div id="rooms" class="list"></div>
+    </section>
+
+    <section id="view-characters" class="view" hidden>
+      <h2>我的角色</h2>
+      <p class="hint">角色名就是你在联机房间里显示的名字，全服唯一，创建后不能修改。</p>
+      <div id="characters" class="list"></div>
+      <form id="character-form" class="card inline">
+        <label>角色名<input id="character-name" required minlength="2" maxlength="16" placeholder="2～16 位"></label>
+        <label>人物模型<select id="character-model"></select></label>
+        <button class="primary">创建角色</button>
+      </form>
+    </section>
+
+    <section id="view-board" class="view" hidden>
+      <h2>排行榜</h2>
+      <p class="hint">按街头赛车胜场排序（至少 2 人参赛才算胜场）。成绩由房主的游戏上报，仅供娱乐。</p>
+      <div class="table-wrap"><table id="board"><thead><tr><th>#</th><th>角色</th><th class="num">胜场</th><th class="num">完赛</th><th class="num">参赛</th><th class="num">在线时长</th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section id="view-races" class="view" hidden>
+      <h2>最近比赛</h2>
+      <div id="races" class="list"></div>
+    </section>
+
+    <section id="view-account" class="view" hidden>
+      <h2>账号</h2>
+      <form id="password-form" class="card narrow">
+        <label>当前密码<input id="current-password" type="password" autocomplete="current-password" required></label>
+        <label>新密码<input id="new-password" type="password" autocomplete="new-password" required minlength="8" maxlength="72"></label>
+        <p class="hint">修改后，其他设备上的登录会失效。</p>
+        <button class="primary">修改密码</button>
+      </form>
+    </section>
+
+    <section id="view-admin" class="view" hidden>
+      <h2>用户管理</h2>
+      <div class="table-wrap"><table id="users"><thead><tr><th>ID</th><th>用户名</th><th>注册时间</th><th>最近登录</th><th></th></tr></thead><tbody></tbody></table></div>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
