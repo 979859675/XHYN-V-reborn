@@ -204,6 +204,8 @@ test('test bots: host or admin sets the count, the host reads it on heartbeat an
   assert.deepEqual(beat.data, { ok: true, bots: 2, botMirror: true });
   const find = async (token) => (await call('GET', '/api/rooms', token)).data.rooms.find((r) => r.id === room.id);
   assert.match((await find(host)).debug, /stats=1,0/);
+  assert.equal((await find(host)).relayReached, false);
+  assert.equal((await find(other)).relayReached, undefined);
   assert.equal((await find(other)).debug, undefined);
   const one = (await call('POST', '/api/relay/bot', host, { index: 1 })).data.relay;
   const again = (await call('POST', '/api/relay/bot', host, { index: 1 })).data.relay;

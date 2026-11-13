@@ -136,6 +136,8 @@
       } }, '复制');
       list.append(el('div', { class: 'item' },
         el('div', { class: 'grow' }, title, el('div', { class: 'sub' }, `房主 ${room.hostName} · ${room.players} / ${room.maxPlayers} 人`),
+          ...(room.relayReached === false ? [el('div', { class: 'sub' }, `中转：服务器还没有收到房主手机的 UDP 数据。别人和人机都进不来。请检查宝塔防火墙和云安全组是否放行了 UDP ${info.relayPort || 27950}，以及域名是否直接解析到本服务器（不能套 CDN）。`)] : []),
+          ...(room.relayReached === true ? [el('div', { class: 'sub' }, '中转：UDP 通畅')] : []),
           ...(room.debug ? [el('div', { class: 'sub' }, `诊断：${room.debug}`)] : [])),
         el('div', { class: 'join' },
           el('div', {}, el('small', {}, '房主 IP'), el('b', {}, room.hostAddress)),

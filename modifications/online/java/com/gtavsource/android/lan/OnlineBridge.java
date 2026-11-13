@@ -95,13 +95,21 @@ public final class OnlineBridge {
         final int index;
         final String code;
         volatile boolean mirror, dead;
-        volatile String note = "";
-        LanTransport transport;
+        volatile String note = "", reason = "";
+        volatile LanTransport transport;
         private byte[] last;
 
         Bot(int index, String code) { this.index = index; this.code = code; }
 
-        @Override public void disconnected() { dead = true; }
+        @Override public void disconnected() {
+            // Keep the game's own reason ("连接超时…", "房间已满…"): it is the only clue to why a bot cannot join.
+            try {
+                LanTransport t = transport;
+                if (t != null) reason = String.valueOf(t.status());
+            } catch (Throwable ignored) {
+            }
+            dead = true;
+        }
         @Override public void receive(byte[] frame) { }
 
         @Override public byte[] snapshot() {
@@ -125,7 +133,16 @@ public final class OnlineBridge {
 
         String describe() {
             LanTransport t = transport;
-            String state = dead || t == null || !t.running() ? "已断开" : t.connected() ? "已加入" : "连接中";
+            String state;
+            if (dead || t == null || !t.running()) {
+                String why = reason;
+                if (why.isEmpty() && t != null) {
+                    try { why = String.valueOf(t.status()); } catch (Throwable ignored) { }
+                }
+                state = why.isEmpty() ? "已断开" : "已断开:" + why;
+            } else {
+                state = t.connected() ? "已加入" : "连接中";
+            }
             return note.isEmpty() ? state : state + "(" + note + ")";
         }
     }

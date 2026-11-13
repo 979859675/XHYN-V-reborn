@@ -317,7 +317,11 @@ function createApp(config, db, relay = createRelay(config)) {
   const roomFor = (row, viewer) => {
     const more = extra(row.id);
     const room = { ...publicRoom(row), bots: more.bots, botMirror: more.mirror };
-    if (viewer.is_admin || Number(row.user_id) === Number(viewer.id)) room.debug = more.debug;
+    if (viewer.is_admin || Number(row.user_id) === Number(viewer.id)) {
+      room.debug = more.debug;
+      // Rooms are listed over HTTPS; the game itself needs the UDP port. Say whether that part works.
+      if (room.relayNetwork) room.relayReached = relay.reached(Number(row.user_id));
+    }
     return room;
   };
 

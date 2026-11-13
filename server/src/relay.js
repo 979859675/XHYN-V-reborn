@@ -101,6 +101,14 @@ function createRelay(config) {
     return network && network.activeAt >= now() - idleMs ? network.id : null;
   }
 
+  /** Whether any UDP datagram from the owner's phone has reached this relay: null without a network. */
+  function reached(userId) {
+    const network = byOwner.get(userId);
+    if (!network) return null;
+    const member = network.members.get(userId);
+    return !!member && member.endpoints.size > 0;
+  }
+
   function closeFor(userId) {
     const network = byOwner.get(userId);
     if (network) remove(network);
@@ -191,7 +199,7 @@ function createRelay(config) {
     });
   }
 
-  return { host, join, bot, networkOf, closeFor, start, close, stats,
+  return { host, join, bot, reached, networkOf, closeFor, start, close, stats,
     get port() { return port; }, get networks() { return networks.size; }, HOST_IP };
 }
 

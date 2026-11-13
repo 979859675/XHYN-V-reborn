@@ -272,6 +272,8 @@ public final class Online {
     }
 
     private static final Relay.Session[] botSessions = new Relay.Session[3];
+    private static final long[] botRetryAt = new long[3];
+    private static volatile String botError = "";
 
     /**
      * Runs the test bots the server asked for. They only exist for relayed rooms: each bot gets its own
@@ -288,6 +290,10 @@ public final class Online {
                     continue;
                 }
                 if (OnlineBridge.botAlive(index, s.code)) continue;
+                // A bot that could not join is retried, but slowly: its last reason stays visible meanwhile.
+                long now = System.currentTimeMillis();
+                if (now < botRetryAt[index - 1]) continue;
+                botRetryAt[index - 1] = now + 20_000;
                 botSessions[index - 1] = Relay.open(api, SERVER, token, "/relay/bot", Json.of("index", index),
                         botSessions[index - 1], System.currentTimeMillis());
                 Relay.NEXT.set(botSessions[index - 1]);
@@ -296,8 +302,8 @@ public final class Online {
                 } finally {
                     Relay.NEXT.remove();
                 }
-            } catch (Throwable ignored) {
-                // Tried again on the next tick; the diagnostic line shows the bot's state.
+            } catch (Throwable t) {
+                botError = "人机" + index + "启动失败:" + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
             }
         }
         try { OnlineBridge.setMirror(mirror); } catch (Throwable ignored) { }
@@ -316,7 +322,7 @@ public final class Online {
             s.virtualLan = !relayed && state.virtualNetwork;
             s.address = relayed ? Relay.HOST_IP : address(state.virtualNetwork);
             try {
-                s.debug = OnlineBridge.diagnostics();
+                s.debug = OnlineBridge.diagnostics() + (botError.isEmpty() ? "" : " | " + botError);
             } catch (Throwable ignored) {
             }
             try {
