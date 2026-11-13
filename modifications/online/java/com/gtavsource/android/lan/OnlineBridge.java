@@ -79,7 +79,7 @@ public final class OnlineBridge {
     // ---- test bots -------------------------------------------------------------------------------
 
     private static final int FRAME_BYTES = 0x12a0, READY_FLAG = 0x1, IN_VEHICLE_FLAGS = 0x2 | 0x40, CAR_INITIAL_FLAG = 0x8, WORLD_FLAG = 0x20;
-    private static final int FLAGS = 0, VEHICLE_COUNT = 0x1c, X = 0x20, Y = 0x24, VEHICLES = 0xe8, RULES = 0x11e8, HEALTH_EPOCH = 0x129c;
+    private static final int FLAGS = 0, SLOT = 8, VEHICLE_COUNT = 0x1c, X = 0x20, Y = 0x24, VEHICLES = 0xe8, RULES = 0x11e8, HEALTH_EPOCH = 0x129c;
     private static final Bot[] BOTS = new Bot[3];
     /** The host's own latest game frame, for mirror bots. */
     private static volatile byte[] hostFrame;
@@ -176,6 +176,7 @@ public final class OnlineBridge {
         int flags = out.getInt(FLAGS) & ~WORLD_FLAG;
         if (dropInitialCar) flags &= ~CAR_INITIAL_FLAG;
         out.putInt(FLAGS, flags);
+        out.putInt(SLOT, 0);                                   // the bot's own transport fills in its member number
         out.putInt(VEHICLE_COUNT, 0);
         Arrays.fill(copy, VEHICLES, RULES, (byte) 0);          // world vehicles
         Arrays.fill(copy, RULES, HEALTH_EPOCH, (byte) 0);      // room rules, damage dealt, melee
