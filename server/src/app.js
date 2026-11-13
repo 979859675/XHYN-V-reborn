@@ -10,6 +10,7 @@ const scrypt = promisify(crypto.scrypt);
 const now = () => Math.floor(Date.now() / 1000);
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const key = (text) => text.normalize('NFKC').toLowerCase();
+const { createRelay, HOST_IP } = require('./relay');
 
 class ApiError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
@@ -60,7 +61,7 @@ function rateLimiter(limit, windowSeconds) {
   };
 }
 
-function createApp(config, db) {
+function createApp(config, db, relay = createRelay(config)) {
   const app = express();
   app.disable('x-powered-by');
   if (config.trustProxy) app.set('trust proxy', 1);
@@ -117,7 +118,8 @@ function createApp(config, db) {
 
   // ---- accounts -------------------------------------------------------------
   api.get('/info', route(async (_req, res) => {
-    res.json({ name: 'XHYN V Online', version: '0.1.0', inviteRequired: !!config.inviteCode, maxCharacters: config.maxCharacters });
+    res.json({ name: 'XHYN V Online', version: '0.2.0', inviteRequired: !!config.inviteCode, maxCharacters: config.maxCharacters,
+      relayPort: relay.port });
   }));
 
   api.post('/auth/register', authLimit, route(async (req, res) => {
@@ -274,10 +276,30 @@ function createApp(config, db) {
     res.json({ ok: true, credited: credit });
   }));
 
+  // ---- relay ----------------------------------------------------------------
+  const relayReady = () => { if (!relay.port) throw new ApiError(503, 'relay_disabled', '这台服务器没有开启公网联机中转'); };
+
+  api.post('/relay/host', authed(async (req, res) => {
+    relayReady();
+    if (req.user.active_character_id == null) throw bad('请先创建并选择角色', 'no_character');
+    res.json({ relay: relay.host(Number(req.user.id)) });
+  }));
+
+  api.post('/relay/join', authed(async (req, res) => {
+    relayReady();
+    if (req.user.active_character_id == null) throw bad('请先创建并选择角色', 'no_character');
+    const joined = relay.join(Number(req.user.id), whole(req.body.networkId, '中转网络', 1, Number.MAX_SAFE_INTEGER));
+    if (!joined) throw new ApiError(404, 'relay_gone', '这个房间的公网联机已经结束，请刷新房间列表');
+    if (joined === 'full') throw new ApiError(409, 'relay_full', '这个房间的公网联机名额已满');
+    res.json({ relay: joined });
+  }));
+
   // ---- room lobby -----------------------------------------------------------
+  // A room whose address is the relay's host address, and whose host has a live relay network, is joined through the relay.
   const publicRoom = (row) => ({ id: Number(row.id), title: row.title, hostName: row.host_name, hostAddress: row.host_address,
     roomCode: row.room_code, virtualLan: !!row.virtual_lan, maxPlayers: Number(row.max_players), players: Number(row.players),
-    gameVersion: row.game_version, createdAt: Number(row.created_at) });
+    gameVersion: row.game_version, createdAt: Number(row.created_at),
+    relayNetwork: row.host_address === HOST_IP ? relay.networkOf(Number(row.user_id)) : null });
   const freshSince = () => now() - config.roomTimeoutSeconds;
 
   api.get('/rooms', authed(async (_req, res) => {
@@ -406,6 +428,7 @@ function createApp(config, db) {
     const id = Number(req.params.id) || 0;
     if (id === Number(req.user.id)) throw bad('不能封禁自己');
     const banned = req.body.banned ? 1 : 0;
+    if (banned) relay.closeFor(Number(req.params.id));
     const result = await db.run('UPDATE users SET banned = ? WHERE id = ?', [banned, id]);
     if (!result.changes && !(await db.get('SELECT id FROM users WHERE id = ?', [id]))) throw new ApiError(404, 'not_found', '用户不存在');
     if (banned) {

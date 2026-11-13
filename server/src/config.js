@@ -42,6 +42,10 @@ function load(overrides = {}) {
     maxSaveBytes: integer('MAX_SAVE_MB', 8, 1, 64) * 1024 * 1024,
     tokenDays: 30,
     roomTimeoutSeconds: 90,
+    relayPort: integer('RELAY_PORT', 27950, 0, 65535),
+    relayMaxKbps: integer('RELAY_MAX_KBPS', 6000, 100, 1000000),
+    relayMaxMembers: 10,
+    relayIdleSeconds: 600,
     ...overrides,
   };
   if (!['sqlite', 'mysql'].includes(config.dbDriver)) throw new Error('DB_DRIVER must be sqlite or mysql');
