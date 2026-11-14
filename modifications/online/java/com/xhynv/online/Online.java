@@ -275,8 +275,8 @@ public final class Online {
         thread.start();
     }
 
-    private static final Relay.Session[] botSessions = new Relay.Session[3];
-    private static final long[] botRetryAt = new long[3];
+    private static final Relay.Session[] botSessions = new Relay.Session[OnlineBridge.MAX_BOTS];
+    private static final long[] botRetryAt = new long[OnlineBridge.MAX_BOTS];
     private static volatile String botError = "";
 
     /**
@@ -295,7 +295,7 @@ public final class Online {
         } else if (botError.startsWith("人机未启动")) {
             botError = "";
         }
-        for (int index = 1; index <= 3; index++) {
+        for (int index = 1; index <= OnlineBridge.MAX_BOTS; index++) {
             try {
                 if (index > wanted) {
                     OnlineBridge.stopBot(index);

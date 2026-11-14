@@ -83,7 +83,7 @@ final class RoomSync {
                     try {
                         Map<String, Object> beat = api.call("POST", "/rooms/" + roomId + "/heartbeat", Json.of(
                                 "players", clamp(s.players, 1, 10), "maxPlayers", clamp(s.limit, 2, 10), "debug", s.debug == null ? "" : s.debug), token);
-                        bots = clamp((int) Json.number(beat, "bots"), 0, 3);
+                        bots = clamp((int) Json.number(beat, "bots"), 0, 9);
                         botMirror = Json.flag(beat, "botMirror");
                     } catch (ApiException e) {
                         if (e.status != 404) throw e;

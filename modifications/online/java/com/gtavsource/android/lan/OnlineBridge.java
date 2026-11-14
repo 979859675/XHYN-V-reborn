@@ -63,12 +63,17 @@ public final class OnlineBridge {
                     .append(" 游戏就绪=").append(state.gameReady ? "是" : "否");
             int[] stats = LanSession.access$600();
             if (stats != null) line.append(" stats=").append(Arrays.toString(stats).replace(" ", ""));
-            StringBuilder bots = new StringBuilder();
+            // Bots in the same state share one entry ("1,2,3:已加入"), or nine bots would not fit the line.
+            Map<String, String> groups = new LinkedHashMap<String, String>();
             synchronized (BOTS) {
                 for (int i = 0; i < BOTS.length; i++) {
-                    if (BOTS[i] != null) bots.append(' ').append(i + 1).append(':').append(BOTS[i].describe());
+                    if (BOTS[i] == null) continue;
+                    String what = BOTS[i].describe(), who = groups.get(what);
+                    groups.put(what, who == null ? String.valueOf(i + 1) : who + "," + (i + 1));
                 }
             }
+            StringBuilder bots = new StringBuilder();
+            for (Map.Entry<String, String> group : groups.entrySet()) bots.append(' ').append(group.getValue()).append(':').append(group.getKey());
             if (bots.length() > 0) line.append(" | 人机").append(bots);
         } catch (Throwable t) {
             line.append(" 诊断失败:").append(t.getClass().getSimpleName());
@@ -80,7 +85,9 @@ public final class OnlineBridge {
 
     private static final int FRAME_BYTES = 0x12a0, READY_FLAG = 0x1, IN_VEHICLE_FLAGS = 0x2 | 0x40, CAR_INITIAL_FLAG = 0x8, WORLD_FLAG = 0x20;
     private static final int FLAGS = 0, SLOT = 8, VEHICLE_COUNT = 0x1c, X = 0x20, Y = 0x24, VEHICLES = 0xe8, RULES = 0x11e8, HEALTH_EPOCH = 0x129c;
-    private static final Bot[] BOTS = new Bot[3];
+    /** A room holds ten members: the host and up to nine bots. */
+    public static final int MAX_BOTS = 9;
+    private static final Bot[] BOTS = new Bot[MAX_BOTS];
     /** The host's own latest game frame, for mirror bots. */
     private static volatile byte[] hostFrame;
 
@@ -210,9 +217,23 @@ public final class OnlineBridge {
         out.putInt(VEHICLE_COUNT, 0);
         Arrays.fill(copy, VEHICLES, RULES, (byte) 0);          // world vehicles
         Arrays.fill(copy, RULES, HEALTH_EPOCH, (byte) 0);      // room rules, damage dealt, melee
-        out.putFloat(X, out.getFloat(X) + 2.5f * index);
-        out.putFloat(Y, out.getFloat(Y) + 2.5f);
+        // Three to a row beside the host, so nine bots do not stand in one long line.
+        out.putFloat(X, out.getFloat(X) + 2.5f * ((index - 1) % 3 + 1));
+        out.putFloat(Y, out.getFloat(Y) + 2.5f * ((index - 1) / 3 + 1));
         return copy;
+    }
+
+    /** Member numbers of the bots that have joined, by bot index - 1 (0: joined, no number yet); -1 for a bot that is not in the room. */
+    public static int[] botSlots() {
+        int[] slots = new int[MAX_BOTS];
+        Arrays.fill(slots, -1);
+        synchronized (BOTS) {
+            for (int i = 0; i < MAX_BOTS; i++) {
+                Bot bot = BOTS[i];
+                if (bot != null && !bot.dead && bot.transport != null && bot.transport.running() && bot.transport.connected()) slots[i] = Math.max(0, bot.slot);
+            }
+        }
+        return slots;
     }
 
     /** Whether bot {@code index} (1-based) is running for this room code. */
