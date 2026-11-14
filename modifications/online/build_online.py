@@ -208,6 +208,7 @@ def main():
     parser.add_argument('--key-alias', default='app')
     parser.add_argument('--password-file', type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--version-name', help='version shown by Android for the app, e.g. online22 (default: the base APK\'s)')
     args = parser.parse_args()
     run = build_zh.run
     base = args.base_apk.resolve(strict=True)
@@ -288,12 +289,25 @@ def main():
     assert text.count('package="%s"' % OLD_PACKAGE) == 1 and text.count(OLD_PACKAGE) == 2, 'application id not found as expected'
     text = text.replace(OLD_PACKAGE, PACKAGE)
     manifest.write_text(text.replace(label, 'android:label="%s"' % APP_NAME), encoding='utf-8')
+    # The version name Android shows is kept by apktool beside the manifest. The version code stays the
+    # base's: the game keys its renderer cache on it, and an update with the same code installs fine.
+    renamed = 0
+    if args.version_name:
+        assert re.fullmatch(r'[A-Za-z][A-Za-z0-9.-]{0,30}', args.version_name), 'unusable version name'
+        notes = named / 'apktool.yml'
+        yml = notes.read_text(encoding='utf-8')
+        found = re.findall(r'^(\s*versionName:\s*)(\S+)\s*$', yml, re.M)
+        assert len(found) == 1, 'version name not found exactly once in apktool.yml'
+        old_version = found[0][1].strip('\'"')
+        notes.write_text(re.sub(r'^(\s*versionName:\s*)\S+\s*$', lambda m: m[1] + args.version_name, yml, flags=re.M), encoding='utf-8')
+        renamed = 2 * (len(args.version_name) - len(old_version))
     run(args.java, '-jar', args.apktool, 'b', named, '-o', work / 'named.apk')
     binary = zipfile.ZipFile(work / 'named.apk').read('AndroidManifest.xml')
     before = zipfile.ZipFile(base).read('AndroidManifest.xml')
-    grew = 2 * (len(APP_NAME) - len(OLD_NAME)) + 4 * (len(PACKAGE) - len(OLD_PACKAGE))
+    grew = 2 * (len(APP_NAME) - len(OLD_NAME)) + 4 * (len(PACKAGE) - len(OLD_PACKAGE)) + renamed
     utf16 = lambda value: value.encode('utf-16-le')
     assert utf16(APP_NAME) in binary and utf16(PACKAGE + '\0') in binary and utf16(PACKAGE + '.modspawn') in binary and utf16(OLD_PACKAGE) not in binary, 'manifest names not as expected'
+    assert not args.version_name or (utf16(args.version_name + '\0') in binary and utf16(old_version + '\0') not in binary), 'version name not as expected'
     assert abs(len(binary) - len(before) - grew) < 8, 'manifest changed by more than the names (%d bytes, expected %d)' % (len(binary) - len(before), grew)
     replace['AndroidManifest.xml'] = binary
     replace[ENGINE] = chinese_engine(zipfile.ZipFile(base).read(ENGINE))

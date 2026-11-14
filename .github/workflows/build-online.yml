@@ -38,9 +38,10 @@ jobs:
           if [ -s modifications/online/SOURCE ]; then
             git checkout "$(tr -dc 0-9a-f < modifications/online/SOURCE)" -- modifications/online/java modifications/online/stubs modifications/online/build_online.py
           fi
-          TAG=v0.3-preview2-zh-CN-online$N
-          APK=XingZhan-GTA5Online-0.3-Preview2-online$N.apk
-          NOTES=releases/0.3-preview2-zh-CN-online$N/RELEASE-NOTES.md
+          # Releases are named after the build number alone: tag online22, file 星战GTA5Online-22.apk.
+          TAG=online$N
+          APK=星战GTA5Online-$N.apk
+          NOTES=releases/online$N/RELEASE-NOTES.md
           T=$RUNNER_TEMP/tools; mkdir -p "$T"
           fail() { echo "::error::$1%0A$(tail -n 40 "$T/log.txt" 2>/dev/null | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"; exit 1; }
           {
@@ -55,7 +56,8 @@ jobs:
             --apktool "$T/apktool.jar" --apksigner "$BT/lib/apksigner.jar" --ecj "$T/ecj.jar" \
             --d8-classpath "$BT/lib/d8.jar" --android-jar "$JAR" \
             --keystore modifications/online/signing/release.p12 --password-file modifications/online/signing/pass.txt \
-            --output "$T/$APK" >> "$T/log.txt" 2>&1 || fail "build failed"
+            --version-name "online$N" --output "$T/app.apk" >> "$T/log.txt" 2>&1 || fail "build failed"
+          mv "$T/app.apk" "$T/$APK"
           tail -n 30 "$T/log.txt"
           cd "$T"
           sha256sum "$APK" > SHA256SUMS.txt
@@ -63,7 +65,12 @@ jobs:
             if gh release view "$TAG" >/dev/null 2>&1; then
               gh release upload "$TAG" "$APK" SHA256SUMS.txt --clobber
             else
-              gh release create "$TAG" "$APK" SHA256SUMS.txt --target "$GITHUB_SHA" --prerelease \
-                --title "星战GTA5Online · 汉化 + 联机中心（测试版 $N）" --notes-file "$GITHUB_WORKSPACE/$NOTES"
+              gh release create "$TAG" "$APK" SHA256SUMS.txt --target "$GITHUB_SHA" --latest \
+                --title "星战GTA5Online-$N" --notes-file "$GITHUB_WORKSPACE/$NOTES"
             fi
+            # GitHub may drop the Chinese part of an uploaded file's name: put it back, or at least show it as the label.
+            ID=$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '.assets[] | select(.name | endswith(".apk")) | .id' | head -n 1)
+            gh api -X PATCH "repos/$GH_REPO/releases/assets/$ID" -f name="$APK" -f label="$APK" \
+              || gh api -X PATCH "repos/$GH_REPO/releases/assets/$ID" -f label="$APK"
+            gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '.assets[] | "\(.name) | \(.label) | \(.size)"'
           } > "$T/log.txt" 2>&1 || fail "could not publish the release"
