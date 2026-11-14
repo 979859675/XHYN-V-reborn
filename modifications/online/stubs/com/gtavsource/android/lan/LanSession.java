@@ -13,6 +13,10 @@ public final class LanSession {
     }
     public static boolean setFriendlyFire(Context context, boolean enabled) { throw new UnsupportedOperationException(); }
     static String publishAnnouncement(String text) { throw new UnsupportedOperationException(); }
+    public static void host(Context context, String name) { throw new UnsupportedOperationException(); }
+    public static void join(Context context, String name, String address, String code) { throw new UnsupportedOperationException(); }
+    public static void disconnect() { throw new UnsupportedOperationException(); }
+    public static String setPlayerLimit(Context context, int limit) { throw new UnsupportedOperationException(); }
     public static State state() { throw new UnsupportedOperationException(); }
     public static List<String> addresses(Context context) { throw new UnsupportedOperationException(); }
     public static final class StateExtra { }

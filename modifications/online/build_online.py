@@ -75,6 +75,11 @@ PATCHES = [
     ('smali/com/gtavsource/android/TrainerBridge$Entity.smali',
      '    invoke-static {v1, v0}, Lcom/gtavsource/android/TrainerLabels;->prefer(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;\n',
      '    invoke-static {v1, v0}, Lcom/xhynv/online/Names;->entity(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;\n'),
+    # Names above players' heads take the colour of their team (red and blue; enemies red in the public room).
+    ('smali_classes10/com/gtavsource/android/lan/LanNameOverlay.smali',
+     '    invoke-static {v1, v2, v12, v7, v3}, Lcom/gtavsource/android/XhynEnglishUi;->draw(Landroid/graphics/Canvas;Ljava/lang/String;FFLandroid/graphics/Paint;)V\n',
+     '    invoke-static {v2, v3}, Lcom/xhynv/online/Deathmatch;->tint(Ljava/lang/String;Landroid/graphics/Paint;)V\n\n'
+     '    invoke-static {v1, v2, v12, v7, v3}, Lcom/gtavsource/android/XhynEnglishUi;->draw(Landroid/graphics/Canvas;Ljava/lang/String;FFLandroid/graphics/Paint;)V\n'),
     # Every LAN page gets the lobby card.
     ('smali_classes10/com/gtavsource/android/LanPage.smali',
      '    :cond_7\n    invoke-direct {v0}, Lcom/gtavsource/android/LanPage;->refresh()V\n\n    return-void\n',

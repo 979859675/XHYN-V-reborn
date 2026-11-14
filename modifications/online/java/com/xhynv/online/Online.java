@@ -14,6 +14,7 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.Collections;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -32,6 +33,10 @@ public final class Online {
     public static volatile String refusal = NEED_LOGIN;
     /** State of the host's relay session, for the card. */
     static volatile String relayStatus = "";
+
+    /** The player is in, or on the way into, a public free-for-all room ("公共对战房"). */
+    static volatile boolean publicMode;
+    private static volatile boolean enteringPublic, startingPublic;
 
     interface Work<T> { T run() throws ApiException; }
 
@@ -78,6 +83,7 @@ public final class Online {
         Relay.hostSession = null;
         Relay.joinSession = null;
         relayStatus = "";
+        publicMode = false;
     }
 
     /**
@@ -164,12 +170,14 @@ public final class Online {
             init(context);
             startReporter();
             Relay.active = null;
+            // A session started from the game's own buttons is an ordinary room.
+            if (!startingPublic) publicMode = false;
             String name = characterName();
             if (!signedIn() || name.isEmpty()) return refuse(NEED_LOGIN, true);
             long now = System.currentTimeMillis();
             Relay.Session relay = null;
             if (host) {
-                if (relayEnabled()) {
+                if (relayEnabled() || startingPublic) {
                     relay = Relay.hostSession;
                     if (relay == null || !relay.fresh(now)) {
                         prepareHostRelay();
@@ -200,6 +208,103 @@ public final class Online {
      * whatever network the phone has, so the game's VPN mode (which insists on a connected VPN app) is off for it.
      */
     public static boolean virtualFlag(boolean setting) { return Relay.active == null && setting; }
+
+    /**
+     * Enters the public free-for-all room. The server says what to do: join the room that is open, or,
+     * when nobody is hosting one, open it on this phone. Also used to come back after the host has left.
+     */
+    static void enterPublic(final Context context) {
+        init(context);
+        final String token = token();
+        final String name = characterName();
+        if (token.isEmpty() || name.isEmpty()) { toast(NEED_LOGIN); return; }
+        synchronized (Online.class) {
+            if (enteringPublic) return;
+            enteringPublic = true;
+        }
+        publicMode = true;
+        toast("正在进入公共对战房…");
+        Thread thread = new Thread(new Runnable() {
+            @Override public void run() {
+                String failure = null;
+                try {
+                    startReporter();
+                    // Leave the room this phone is in, and wait until the game has let go of it.
+                    if (OnlineBridge.sessionActive()) {
+                        main.post(new Runnable() { @Override public void run() { try { LanSession.disconnect(); } catch (Throwable ignored) { } } });
+                        for (int i = 0; i < 50 && (i < 2 || OnlineBridge.sessionActive()); i++) Thread.sleep(300);
+                    }
+                    publicMode = true;
+                    Map<String, Object> reply = null;
+                    String action = "wait";
+                    for (int attempt = 0; attempt < 12 && "wait".equals(action); attempt++) {
+                        if (attempt > 0) Thread.sleep(3000);
+                        reply = api.call("POST", "/public/enter", Api.empty(), token);
+                        action = Json.string(reply, "action");
+                    }
+                    final boolean host = "host".equals(action);
+                    final String code;
+                    if (host) {
+                        refreshHostRelay(token);
+                        Relay.Session session = Relay.hostSession;
+                        if (session == null || !session.fresh(System.currentTimeMillis())) throw new ApiException(0, "公网联机没有准备好（" + relayStatus + "）");
+                        code = "";
+                    } else if ("join".equals(action)) {
+                        Map<String, Object> room = Json.map(reply, "room");
+                        Relay.joinSession = Relay.open(api, SERVER, token, Json.number(room, "relayNetwork"), null, System.currentTimeMillis());
+                        code = Json.string(room, "roomCode");
+                    } else {
+                        throw new ApiException(0, "公共对战房正在由别人开启，请稍后再点一次");
+                    }
+                    main.post(new Runnable() {
+                        @Override public void run() {
+                            startingPublic = true;
+                            try {
+                                if (host) LanSession.host(context, name);
+                                else LanSession.join(context, name, Relay.HOST_IP, code);
+                            } catch (Throwable t) {
+                                toast("进入公共对战房失败：" + t.getClass().getSimpleName());
+                            } finally {
+                                startingPublic = false;
+                                enteringPublic = false;
+                            }
+                            boolean started = false;
+                            try { started = OnlineBridge.sessionActive(); } catch (Throwable ignored) { }
+                            if (!started) {
+                                publicMode = false;
+                                toast("没能进入公共对战房：" + refusal);
+                            } else {
+                                toast(host ? "公共对战房里现在没有人，已由你开启。进入游戏后其他人会陆续加入。" : "已加入公共对战房。进入游戏即可开打。");
+                                if (host) main.postDelayed(new Runnable() {
+                                    @Override public void run() { try { LanSession.setPlayerLimit(context, 10); } catch (Throwable ignored) { } }
+                                }, 1500);
+                            }
+                        }
+                    });
+                    return;
+                } catch (ApiException e) {
+                    failure = e.getMessage();
+                } catch (InterruptedException e) {
+                    failure = "已取消";
+                } catch (Throwable t) {
+                    failure = "出错了：" + t.getClass().getSimpleName();
+                }
+                publicMode = false;
+                enteringPublic = false;
+                toast("没能进入公共对战房：" + failure);
+            }
+        }, "xhyn-public-enter");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    static boolean enteringPublic() { return enteringPublic; }
+
+    /** Leaves the public room for good (no automatic return). */
+    static void leavePublic() {
+        publicMode = false;
+        main.post(new Runnable() { @Override public void run() { try { LanSession.disconnect(); } catch (Throwable ignored) { } } });
+    }
 
     /** Gets (or refreshes) this user's relay network in the background. */
     static void prepareHostRelay() {
@@ -341,6 +446,7 @@ public final class Online {
         if (s.hosting) {
             boolean relayed = Relay.active != null && Relay.active == Relay.hostSession;
             s.virtualLan = !relayed && state.virtualNetwork;
+            s.publicRoom = relayed && publicMode;
             s.address = relayed ? Relay.HOST_IP : address(state.virtualNetwork);
             try {
                 s.debug = OnlineBridge.diagnostics() + relayNote() + (botError.isEmpty() ? "" : " | " + botError);

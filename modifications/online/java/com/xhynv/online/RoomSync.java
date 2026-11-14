@@ -13,6 +13,8 @@ final class RoomSync {
         boolean hosting;
         boolean playing;
         boolean virtualLan;
+        /** This room is a public free-for-all room the server asked this phone to open. */
+        boolean publicRoom;
         String code = "";
         String address = "";
         int players;
@@ -59,7 +61,7 @@ final class RoomSync {
         String token = account.token();
         boolean signedIn = token != null && !token.isEmpty();
         boolean listable = signedIn && s.hosting && s.code.matches("[0-9]{6}");
-        String key = listable ? s.code + '|' + s.address + '|' + s.virtualLan : "";
+        String key = listable ? s.code + '|' + s.address + '|' + s.virtualLan + '|' + s.publicRoom : "";
         try {
             // Hosting stopped, or the room became a different one: take the old listing down first.
             if (roomId != 0 && !key.equals(roomKey)) closeRoom();
@@ -70,7 +72,7 @@ final class RoomSync {
                     if (now >= nextRoomAt) {
                         nextRoomAt = now + RETRY_MS;
                         Map<String, Object> made = api.call("POST", "/rooms", Json.of(
-                                "hostAddress", s.address, "roomCode", s.code, "virtualLan", s.virtualLan,
+                                "hostAddress", s.address, "roomCode", s.code, "virtualLan", s.virtualLan, "public", s.publicRoom,
                                 "maxPlayers", clamp(s.limit, 2, 10), "gameVersion", gameVersion), token);
                         roomId = Json.number(Json.map(made, "room"), "id");
                         roomToken = token;

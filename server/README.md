@@ -139,3 +139,12 @@ npm test
 - 请求里的 `hits` / `counts`：打中对方队伍的人机累计 `botHits` 次（创建时指定，1～50，默认 3）算击倒一次。
 - `POST /api/match/create` 新增 `botHits`、`record`（`false` = 本场不写入数据库）。
 - `POST /api/match/simulate {networkId, victim, killer?}`：房主或管理员让某个队员/人机阵亡一次，用于测试；`victim` 取自房间列表里 `match.players[].id`。
+
+## online12：公共对战房（个人对战）
+
+- `POST /api/public/enter` → `{action: "join", room}`（加入已开的公共房）、`{action: "host", number, title}`（没人时由调用者开房，随后的 `POST /api/rooms {public: true}` 会被标成“公共对战房 N”）或 `{action: "wait", seconds}`（别人正在开房）。
+- `POST /api/ffa/state {networkId, slot?, hits?, death?}` → `{public, host, alive, me: {kills, deaths, totalKills, totalDeaths}, players, feed}`。`alive: false` 表示房主已离开，手机会重新调用 `/public/enter`。
+- `GET /api/ffa/board?range=day|week|all`：个人对战榜（按北京时间划分日和周，周一为一周开始）。
+- `GET /api/admin/ffa`：每名角色的累计战绩 + 最近 200 条击杀明细；`POST /api/admin/ffa/reset {characterId}` 或 `{all: true}` 清零。
+- 每次阵亡在 `ffa_kills` 表里记一行（新表，启动时自动创建）。公共房不能加人机、不能开团队竞技。
+- 中转网络满员时，会回收 60 秒没有数据的座位，长期开着的房间不会被离开的人占满。

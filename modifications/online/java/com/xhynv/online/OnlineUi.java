@@ -138,7 +138,11 @@ public final class OnlineUi {
         card.addView(status);
         buttons = new LinearLayout(activity);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
-        card.addView(buttons);
+        // The row can be wider than the card on a narrow screen: let it scroll sideways.
+        android.widget.HorizontalScrollView row = new android.widget.HorizontalScrollView(activity);
+        row.setHorizontalScrollBarEnabled(false);
+        row.addView(buttons);
+        card.addView(row);
         message = new TextView(activity);
         message.setTextSize(13);
         message.setTextColor(0xFFFFC857);
@@ -168,6 +172,9 @@ public final class OnlineUi {
             if (!syncStatus.isEmpty()) line += "\n" + syncStatus;
             status.setText(line);
             addButton(character.isEmpty() ? "选择角色" : "切换角色", character.isEmpty(), new Runnable() { @Override public void run() { showCharacters(); } });
+            if (!character.isEmpty()) addButton("公共对战房", true, new Runnable() {
+                @Override public void run() { Online.enterPublic(activity); }
+            });
             if (ip != null && code != null) addButton("在线房间", !character.isEmpty(), new Runnable() { @Override public void run() { showRooms(); } });
             if (name != null && ip == null) {
                 // The "create room" page: choose whether the room is reachable over the internet.

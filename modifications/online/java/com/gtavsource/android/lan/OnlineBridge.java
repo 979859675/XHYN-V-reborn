@@ -52,6 +52,12 @@ public final class OnlineBridge {
         return race;
     }
 
+    /** Whether a LAN session is running or being opened or closed. */
+    public static boolean sessionActive() {
+        LanSession.State state = LanSession.state();
+        return state.active || state.busy;
+    }
+
     // ---- diagnostics -----------------------------------------------------------------------------
 
     /** One line saying why the game considers itself ready or not; shown to the host and the administrator. */

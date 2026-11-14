@@ -5,8 +5,12 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -32,6 +36,11 @@ import java.util.Map;
  * and which members its player has just damaged; a death is a point for the other team and the last
  * one to damage the victim gets the kill. Everyone polls the server for the score, so the game's own
  * network protocol is untouched. Test bots fill the smaller team and go down after enough hits.
+ *
+ * In a public room ("公共对战房") there are no teams: the same reports feed a free-for-all in which the
+ * server counts every player's own kills, for ever.
+ *
+ * Names above heads take the team's colour (red or blue; everyone else is red in a free-for-all).
  *
  * The match is shown in a floating window drawn like the game's own room panel: a small block that
  * can be dragged anywhere and opens into a panel.
@@ -59,6 +68,13 @@ public final class Deathmatch {
     private static volatile long userId;
     private static volatile boolean inRoom;
     private static String seenState = "";
+    private static volatile Map<String, Object> arena;   // the free-for-all of a public room; null elsewhere
+    private static volatile long arenaNetwork;           // relay network known to be a public room
+    private static int goneCount;
+    private static long idleSince, fireAskedAt;
+    /** Colour (RGB) of each name drawn above a head. Replaced as a whole, read by the game's draw thread. */
+    private static volatile Map<String, Integer> nameColors = java.util.Collections.emptyMap();
+    private static final int RED = 0xFF5C5C, BLUE = 0x5AA2FF;
     private static boolean fireWasOff;
 
     // ---- the host's choices for the next match (UI thread) ------------------------
@@ -142,18 +158,60 @@ public final class Deathmatch {
         return body;
     }
 
+    /** Called by the game just before it draws a player's name tag: gives the paint the team's colour. */
+    public static void tint(String shown, Paint paint) {
+        try {
+            Map<String, Integer> colors = nameColors;
+            if (colors.isEmpty() || shown == null || paint == null) return;
+            Integer color = colors.get(shown);
+            if (color == null) {
+                // A long name is cut short with "…"; a tag may also carry something after the name.
+                String stem = shown.endsWith("…") ? shown.substring(0, shown.length() - 1) : null;
+                for (Map.Entry<String, Integer> entry : colors.entrySet()) {
+                    if (shown.startsWith(entry.getKey()) || (stem != null && !stem.isEmpty() && entry.getKey().startsWith(stem))) { color = entry.getValue(); break; }
+                }
+            }
+            if (color != null) paint.setColor((paint.getColor() & 0xFF000000) | color);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void recolor() {
+        Map<String, Integer> colors = new java.util.HashMap<String, Integer>();
+        Map<String, Object> field = arena, current = match;
+        if (field != null) {
+            for (Object entry : Json.list(field, "players")) {
+                if (entry instanceof Map && !Json.flag((Map<String, Object>) entry, "me")) colors.put(Json.string((Map<String, Object>) entry, "name"), RED);
+            }
+        } else if (current != null && !"finished".equals(Json.string(current, "state"))) {
+            for (Object entry : Json.list(current, "players")) {
+                if (!(entry instanceof Map)) continue;
+                Map<String, Object> player = (Map<String, Object>) entry;
+                colors.put(Json.string(player, "name"), "red".equals(Json.string(player, "team")) ? RED : BLUE);
+            }
+        }
+        nameColors = colors;
+    }
+
     private static void poll() {
         Relay.Session session = Relay.active;
         String token = Online.token();
-        boolean playing = false;
+        boolean playing = false, active = false;
         try { playing = OnlineBridge.inGame(); } catch (Throwable ignored) { }
+        try { active = OnlineBridge.sessionActive(); } catch (Throwable ignored) { }
         if (session == null || session.networkId <= 0 || token.isEmpty() || !playing) {
             inRoom = false;
             match = null;
+            arena = null;
             deathNote = null;
             synchronized (hitCounts) { java.util.Arrays.fill(hitCounts, 0); }
+            recolor();
+            if (!active) lostPublic(session, token);
+            else idleSince = 0;
             return;
         }
+        idleSince = 0;
         Map<String, Object> body = body();
         List<Object> hits = new ArrayList<Object>(), counts = new ArrayList<Object>();
         synchronized (hitCounts) {
@@ -172,9 +230,82 @@ public final class Deathmatch {
         deathNote = null;
         if (note != null) body.put("debug", note);
         try {
-            accept(Online.api.call("POST", note != null ? "/match/death" : "/match/state", body, token));
+            if (arenaNetwork == session.networkId || Online.publicMode) {
+                try {
+                    if (note != null) body.put("death", true);
+                    acceptArena(Online.api.call("POST", "/ffa/state", body, token), session.networkId);
+                    return;
+                } catch (ApiException e) {
+                    if (e.status != 404) throw e;
+                    arenaNetwork = 0;       // an ordinary room after all (or not listed yet)
+                    arena = null;
+                    body.remove("death");
+                }
+            }
+            Map<String, Object> reply = Online.api.call("POST", note != null ? "/match/death" : "/match/state", body, token);
+            if (Json.number(reply, "public") > 0) arenaNetwork = session.networkId;
+            arena = null;
+            accept(reply);
         } catch (ApiException e) {
-            if (e.status == 403 || e.status == 404) { inRoom = false; match = null; }
+            if (e.status == 403 || e.status == 404) { inRoom = false; match = null; arena = null; }
+        }
+        recolor();
+    }
+
+    /** The public room's standing. The host keeps friendly fire on; a member whose host has gone goes back in. */
+    private static void acceptArena(Map<String, Object> reply, long network) {
+        arenaNetwork = network;
+        inRoom = true;
+        host = Json.flag(reply, "host");
+        userId = Json.number(reply, "userId");
+        match = null;
+        arena = reply;
+        recolor();
+        long now = System.currentTimeMillis();
+        if (host) {
+            goneCount = 0;
+            if (now - fireAskedAt > 10_000) {
+                fireAskedAt = now;
+                Online.main.post(new Runnable() {
+                    @Override public void run() {
+                        try { if (!OnlineBridge.friendlyFire()) OnlineBridge.setFriendlyFire(activityOrApp(), true); } catch (Throwable ignored) { }
+                    }
+                });
+            }
+        } else if (Json.flag(reply, "alive")) {
+            goneCount = 0;
+        } else if (++goneCount >= 2 && Online.publicMode && !Online.enteringPublic()) {
+            goneCount = 0;
+            arena = null;
+            Online.toast("公共对战房的房主离开了，正在重新进入…");
+            Online.enterPublic(activityOrApp());
+        }
+    }
+
+    /**
+     * The session ended while this phone was in a public room. If the room is still there the player
+     * left on purpose; if its host has gone, go back in (the first one back opens the room again).
+     */
+    private static void lostPublic(Relay.Session session, String token) {
+        if (!Online.publicMode || Online.enteringPublic()) { idleSince = 0; return; }
+        long now = System.currentTimeMillis();
+        if (idleSince == 0) { idleSince = now; return; }
+        if (now - idleSince < 8000) return;
+        idleSince = 0;
+        boolean gone = false;
+        try {
+            if (session != null && session.networkId > 0 && session != Relay.hostSession && !token.isEmpty()) {
+                Map<String, Object> reply = Online.api.call("POST", "/ffa/state", Json.of("networkId", session.networkId), token);
+                gone = !Json.flag(reply, "alive");
+            }
+        } catch (ApiException e) {
+            gone = e.status == 404;
+        }
+        if (gone) {
+            Online.toast("公共对战房的房主离开了，正在重新进入…");
+            Online.enterPublic(activityOrApp());
+        } else {
+            Online.publicMode = false;
         }
     }
 
@@ -274,7 +405,9 @@ public final class Deathmatch {
         final int kind;          // 0 heading, 1 text, 2 button
         final String label;
         final Runnable action;
-        Item(int kind, String label, Runnable action) { this.kind = kind; this.label = label; this.action = action; }
+        final int color;         // 0: the usual colour of its kind
+        Item(int kind, String label, Runnable action) { this(kind, label, action, 0); }
+        Item(int kind, String label, Runnable action, int color) { this.kind = kind; this.label = label; this.action = action; this.color = color; }
     }
 
     private static WeakReference<Activity> windowActivity = new WeakReference<Activity>(null);
@@ -403,14 +536,16 @@ public final class Deathmatch {
         try {
             Activity activity = gameActivity();
             Map<String, Object> current = match;
-            boolean visible = activity != null && inRoom && (current != null || host);
+            Map<String, Object> field = arena;
+            boolean visible = activity != null && inRoom && (current != null || host || field != null);
             if (!visible) {
                 if (root != null) root.setVisibility(View.GONE);
                 return;
             }
             if (root == null || windowActivity.get() != activity || root.getParent() == null) build(activity);
             root.setVisibility(View.VISIBLE);
-            head.setText(expanded ? summary(current) + "　　收起 ▲" : summary(current));
+            String title = field != null ? arenaSummary(field) : summary(current);
+            head.setText(colored(expanded ? title + "　　收起 ▲" : title, field == null && current != null));
             ViewGroup.LayoutParams params = root.getLayoutParams();
             int width = expanded ? Math.min(dp(320), activity.getResources().getDisplayMetrics().widthPixels - dp(24)) : ViewGroup.LayoutParams.WRAP_CONTENT;
             if (params.width != width) {
@@ -419,9 +554,9 @@ public final class Deathmatch {
             }
             scroll.setVisibility(expanded ? View.VISIBLE : View.GONE);
             if (!expanded) return;
-            List<Item> items = items(current);
+            List<Item> items = field != null ? arenaItems(field) : items(current);
             StringBuilder key = new StringBuilder();
-            for (Item item : items) key.append(item.kind).append(item.label).append('\n');
+            for (Item item : items) key.append(item.kind).append(item.color).append(item.label).append('\n');
             if (key.toString().equals(drawn)) return;
             drawn = key.toString();
             box.removeAllViews();
@@ -450,10 +585,70 @@ public final class Deathmatch {
                     });
                     place.topMargin = dp(8);
                 }
+                if (item.color != 0) line.setTextColor(0xFF000000 | item.color);
                 box.addView(line, place);
             }
         } catch (Throwable ignored) {
         }
+    }
+
+    /** The score line with "红 3" in red and "5 蓝" in blue. */
+    private static CharSequence colored(String line, boolean teams) {
+        int colon = line.indexOf(" : "), red = line.indexOf("红 "), blue = line.indexOf(" 蓝");
+        if (!teams || colon < 0 || red < 0 || red > colon || blue < colon) return line;
+        SpannableString text = new SpannableString(line);
+        text.setSpan(new ForegroundColorSpan(0xFF000000 | RED), red, colon, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        text.setSpan(new ForegroundColorSpan(0xFF000000 | BLUE), colon + 3, blue + 2, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return text;
+    }
+
+    // ---- free-for-all in a public room ---------------------------------------------
+    private static String arenaSummary(Map<String, Object> field) {
+        Map<String, Object> me = Json.map(field, "me");
+        return "个人对战 · 击杀 " + (me == null ? 0 : Json.number(me, "kills")) + " / 阵亡 " + (me == null ? 0 : Json.number(me, "deaths"));
+    }
+
+    private static List<Item> arenaItems(Map<String, Object> field) {
+        List<Item> items = new ArrayList<Item>();
+        Map<String, Object> me = Json.map(field, "me");
+        items.add(new Item(0, "公共对战房 " + Json.number(field, "public") + (host ? " · 你是房主" : ""), null));
+        if (me != null) items.add(new Item(1, "本次：击杀 " + Json.number(me, "kills") + " · 阵亡 " + Json.number(me, "deaths")
+                + "\n累计：击杀 " + Json.number(me, "totalKills") + " · 阵亡 " + Json.number(me, "totalDeaths"), null));
+        items.add(new Item(0, "房间内排名（本次）", null));
+        int place = 0;
+        for (Object entry : Json.list(field, "players")) {
+            if (!(entry instanceof Map)) continue;
+            @SuppressWarnings("unchecked") Map<String, Object> player = (Map<String, Object>) entry;
+            boolean mine = Json.flag(player, "me");
+            items.add(new Item(1, ++place + ". " + Json.string(player, "name") + (mine ? "（我）" : "") + "　击杀 " + Json.number(player, "kills")
+                    + " · 阵亡 " + Json.number(player, "deaths"), null, mine ? 0 : RED));
+        }
+        String feed = feed(field);
+        if (!feed.isEmpty()) {
+            items.add(new Item(0, "最近", null));
+            items.add(new Item(1, feed, null));
+        }
+        items.add(new Item(0, "各打各的，只算自己的击杀；今日榜、本周榜和总榜在网页“排行榜”里。"
+                + (host ? "\n你退出后，房间会由下一位玩家接手。" : ""), null));
+        items.add(new Item(2, "退出公共对战房", new Runnable() {
+            @Override public void run() {
+                Online.leavePublic();
+                Online.toast("已退出公共对战房");
+            }
+        }));
+        return items;
+    }
+
+    private static String feed(Map<String, Object> from) {
+        StringBuilder feed = new StringBuilder();
+        for (Object entry : Json.list(from, "feed")) {
+            if (!(entry instanceof Map)) continue;
+            @SuppressWarnings("unchecked") Map<String, Object> line = (Map<String, Object>) entry;
+            String killer = Json.string(line, "killer");
+            if (feed.length() > 0) feed.append('\n');
+            feed.append(killer.isEmpty() ? Json.string(line, "victim") + " 阵亡" : killer + " 击倒了 " + Json.string(line, "victim"));
+        }
+        return feed.toString();
     }
 
     /** The one-line state shown on the collapsed block and in the title bar. */
@@ -500,10 +695,10 @@ public final class Deathmatch {
     }
 
     private static void teams(List<Item> items, Map<String, Object> current, boolean scores) {
-        items.add(new Item(0, "红队 " + players(current, "red").size() + " / 5", null));
-        items.add(new Item(1, teamText(current, "red", scores), null));
-        items.add(new Item(0, "蓝队 " + players(current, "blue").size() + " / 5", null));
-        items.add(new Item(1, teamText(current, "blue", scores), null));
+        items.add(new Item(0, "红队 " + players(current, "red").size() + " / 5", null, RED));
+        items.add(new Item(1, teamText(current, "red", scores), null, RED));
+        items.add(new Item(0, "蓝队 " + players(current, "blue").size() + " / 5", null, BLUE));
+        items.add(new Item(1, teamText(current, "blue", scores), null, BLUE));
     }
 
     /** The host's settings for the next match, each a button that steps through its choices. */
@@ -542,8 +737,8 @@ public final class Deathmatch {
             items.add(new Item(0, rules, null));
             teams(items, current, false);
             items.add(new Item(0, mine.isEmpty() ? "请选择队伍" : "你在" + ("red".equals(mine) ? "红队" : "蓝队") + "，等房主开始", null));
-            if (!"red".equals(mine)) items.add(new Item(2, "加入红队", post("/match/team", Json.of("team", "red"), "已加入红队")));
-            if (!"blue".equals(mine)) items.add(new Item(2, "加入蓝队", post("/match/team", Json.of("team", "blue"), "已加入蓝队")));
+            if (!"red".equals(mine)) items.add(new Item(2, "加入红队", post("/match/team", Json.of("team", "red"), "已加入红队"), RED));
+            if (!"blue".equals(mine)) items.add(new Item(2, "加入蓝队", post("/match/team", Json.of("team", "blue"), "已加入蓝队"), BLUE));
             if (!mine.isEmpty()) items.add(new Item(2, "退出队伍", post("/match/team", Json.of("team", null), "已退出队伍")));
             if (host) {
                 items.add(new Item(2, "开始", post("/match/start", null, null)));
@@ -554,17 +749,10 @@ public final class Deathmatch {
         boolean running = "running".equals(state);
         items.add(new Item(0, running ? rules : result(current), null));
         teams(items, current, true);
-        StringBuilder feed = new StringBuilder();
-        for (Object entry : Json.list(current, "feed")) {
-            if (!(entry instanceof Map)) continue;
-            @SuppressWarnings("unchecked") Map<String, Object> line = (Map<String, Object>) entry;
-            String killer = Json.string(line, "killer");
-            if (feed.length() > 0) feed.append('\n');
-            feed.append(killer.isEmpty() ? Json.string(line, "victim") + " 阵亡" : killer + " 击倒了 " + Json.string(line, "victim"));
-        }
-        if (feed.length() > 0) {
+        String feed = feed(current);
+        if (!feed.isEmpty()) {
             items.add(new Item(0, "最近", null));
-            items.add(new Item(1, feed.toString(), null));
+            items.add(new Item(1, feed, null));
         }
         if (host && running) items.add(new Item(2, "提前结束（按当前比分）", post("/match/end", null, null)));
         if (host && !running) {
