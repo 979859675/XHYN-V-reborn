@@ -282,7 +282,15 @@ public final class Online {
     private static void manageBots(RoomSync.Snapshot s, int wanted, boolean mirror) {
         boolean relayed = s.hosting && Relay.active != null && Relay.active == Relay.hostSession;
         String token = token();
-        if (!relayed || token.isEmpty()) wanted = 0;
+        // Turning the mirror on is a request to see a bot, so it brings one along.
+        if (mirror && wanted == 0) wanted = 1;
+        if (wanted > 0 && (!relayed || token.isEmpty())) {
+            botError = token.isEmpty() ? "人机未启动:未登录" : !s.hosting ? "人机未启动:本机不是房主"
+                    : "人机未启动:房间没有走服务器中转";
+            wanted = 0;
+        } else if (botError.startsWith("人机未启动")) {
+            botError = "";
+        }
         for (int index = 1; index <= 3; index++) {
             try {
                 if (index > wanted) {

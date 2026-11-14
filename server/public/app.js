@@ -120,6 +120,7 @@
       if (room.virtualLan) title.append(el('span', { class: 'tag warn' }, '虚拟局域网'));
       if (room.players >= room.maxPlayers) title.append(el('span', { class: 'tag bad' }, '已满'));
       if (room.relayNetwork) title.append(el('span', { class: 'tag' }, '公网联机'));
+      if (!room.bots && room.botMirror) title.append(el('span', { class: 'tag' }, '镜像已开，但还没有人机：点“加人机”'));
       if (room.bots) title.append(el('span', { class: 'tag warn' }, `人机 ${room.bots}${room.botMirror ? '（镜像）' : ''}`));
       const setBots = (count, mirror) => (e) => act(e.target, async () => {
         await api('POST', `/rooms/${room.id}/bots`, { count, mirror }); await loadRooms();
@@ -128,7 +129,7 @@
       const botButtons = (user.isAdmin || room.debug !== undefined) && room.relayNetwork ? [
         el('button', { class: 'ghost', onclick: setBots(Math.min(3, room.bots + 1), room.botMirror) }, '加人机'),
         el('button', { class: 'ghost', onclick: setBots(Math.max(0, room.bots - 1), room.botMirror) }, '减人机'),
-        el('button', { class: 'ghost', onclick: setBots(room.bots, !room.botMirror) }, room.botMirror ? '关镜像' : '开镜像（实验）'),
+        el('button', { class: 'ghost', onclick: setBots(room.botMirror ? room.bots : Math.max(1, room.bots), !room.botMirror) }, room.botMirror ? '关镜像' : '开镜像（实验）'),
       ] : [];
       const copy = el('button', { class: 'ghost', onclick: async () => {
         try { await navigator.clipboard.writeText(`${room.hostAddress} ${room.roomCode}`); toast('已复制房主 IP 和房间码'); }

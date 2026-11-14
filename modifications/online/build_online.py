@@ -67,6 +67,14 @@ PATCHES = [
      '    invoke-static {p0}, Lcom/gtavsource/android/XhynV02Settings;->resume(Lcom/gtavsource/android/GameMenuActivity;)V\n\n    return-void\n',
      '    invoke-static {p0}, Lcom/gtavsource/android/XhynV02Settings;->resume(Lcom/gtavsource/android/GameMenuActivity;)V\n\n'
      '    invoke-static {p0}, Lcom/xhynv/online/OnlineUi;->startup(Landroid/app/Activity;)V\n\n    return-void\n'),
+    # Weapon and vehicle names in the trainer and room tools lists are shown in Chinese.
+    ('smali/com/gtavsource/android/TrainerBridge$CatalogItem.smali',
+     '    invoke-static/range {p1 .. p1}, Lcom/gtavsource/android/XhynEnglish;->catalog(Lorg/json/JSONObject;)V\n',
+     '    invoke-static/range {p1 .. p1}, Lcom/gtavsource/android/XhynEnglish;->catalog(Lorg/json/JSONObject;)V\n\n'
+     '    invoke-static/range {p1 .. p1}, Lcom/xhynv/online/Names;->catalog(Lorg/json/JSONObject;)V\n'),
+    ('smali/com/gtavsource/android/TrainerBridge$Entity.smali',
+     '    invoke-static {v1, v0}, Lcom/gtavsource/android/TrainerLabels;->prefer(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;\n',
+     '    invoke-static {v1, v0}, Lcom/xhynv/online/Names;->entity(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;\n'),
     # Every LAN page gets the lobby card.
     ('smali_classes10/com/gtavsource/android/LanPage.smali',
      '    :cond_7\n    invoke-direct {v0}, Lcom/gtavsource/android/LanPage;->refresh()V\n\n    return-void\n',
