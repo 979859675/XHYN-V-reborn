@@ -444,16 +444,173 @@ function createApp(config, db, relay = createRelay(config)) {
       COALESCE(SUM(CASE WHEN rr.finished = 1 AND rr.position = 1 AND r.entrants >= 2 THEN 1 ELSE 0 END), 0) AS wins
     FROM characters c LEFT JOIN race_results rr ON rr.character_id = c.id LEFT JOIN races r ON r.id = rr.race_id`;
   const publicStats = (row) => ({ id: Number(row.id), name: row.name, model: row.model, playSeconds: Number(row.play_seconds),
-    races: Number(row.races), finishes: Number(row.finishes), wins: Number(row.wins) });
+    races: Number(row.races), finishes: Number(row.finishes), wins: Number(row.wins),
+    dmMatches: 0, dmWins: 0, dmKills: 0, dmDeaths: 0 });
+  /** Adds each character's team deathmatch totals to its statistics row. */
+  async function withDeathmatch(stats) {
+    const rows = await db.all(`SELECT character_id, COUNT(*) AS matches, COALESCE(SUM(won), 0) AS wins,
+      COALESCE(SUM(kills), 0) AS kills, COALESCE(SUM(deaths), 0) AS deaths FROM dm_players WHERE character_id IS NOT NULL GROUP BY character_id`);
+    const byId = new Map(rows.map((row) => [Number(row.character_id), row]));
+    for (const entry of stats) {
+      const row = byId.get(entry.id);
+      if (row) Object.assign(entry, { dmMatches: Number(row.matches), dmWins: Number(row.wins), dmKills: Number(row.kills), dmDeaths: Number(row.deaths) });
+    }
+    return stats;
+  }
 
   api.get('/leaderboard', route(async (_req, res) => {
     const rows = await db.all(`${STATS} GROUP BY c.id, c.name, c.model, c.play_seconds ORDER BY wins DESC, finishes DESC, c.play_seconds DESC, c.id LIMIT 50`);
-    res.json({ leaderboard: rows.map(publicStats) });
+    res.json({ leaderboard: await withDeathmatch(rows.map(publicStats)) });
   }));
 
   api.get('/me/stats', authed(async (req, res) => {
     const rows = await db.all(`${STATS} WHERE c.user_id = ? GROUP BY c.id, c.name, c.model, c.play_seconds ORDER BY c.id`, [req.user.id]);
-    res.json({ characters: rows.map(publicStats) });
+    res.json({ characters: await withDeathmatch(rows.map(publicStats)) });
+  }));
+
+  // ---- team deathmatch ------------------------------------------------------
+  // One match per relay network, kept in memory while it is being played and written to the database
+  // when it ends. The host owns it; every phone reports its own player's deaths, and a death is a
+  // point for the other team. Like race results this is client-reported and not tamper-proof.
+  const TEAMS = ['red', 'blue'];
+  const TEAM_SIZE = 5;
+  const matches = new Map();   // network id -> match
+  const other = (team) => (team === 'red' ? 'blue' : 'red');
+
+  function matchContext(req) {
+    const networkId = whole(req.body.networkId, '中转网络', 1, Number.MAX_SAFE_INTEGER);
+    const role = relay.roleIn(networkId, Number(req.user.id));
+    if (!role) throw new ApiError(403, 'not_in_room', '你不在这个公网联机房间里');
+    return { networkId, host: role === 'host', match: matches.get(networkId) || null };
+  }
+  const hostOnly = (context) => { if (!context.host) throw new ApiError(403, 'not_host', '只有房主可以操作枪战'); };
+  const needMatch = (context) => { if (!context.match) throw new ApiError(404, 'no_match', '房主还没有创建枪战'); return context.match; };
+
+  async function finishMatch(match, reason) {
+    if (match.state !== 'running') return;
+    match.state = 'finished';
+    match.reason = reason;
+    match.endedAt = now();
+    match.winner = match.score.red === match.score.blue ? 'draw' : (match.score.red > match.score.blue ? 'red' : 'blue');
+    const players = [...match.players.values()];
+    if (!players.length) return;
+    await db.tx(async (tx) => {
+      const saved = await tx.run('INSERT INTO dm_matches (host_user_id, host_name, target, minutes, red_score, blue_score, winner, reason, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [match.hostId, match.hostName, match.target, match.minutes, match.score.red, match.score.blue, match.winner, reason, match.startedAt, match.endedAt]);
+      for (const player of players) {
+        await tx.run('INSERT INTO dm_players (match_id, character_id, character_name, team, kills, deaths, won) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [saved.insertId, player.characterId, player.name, player.team, player.kills, player.deaths, player.team === match.winner ? 1 : 0]);
+      }
+    });
+  }
+  /** Ends a match whose time is up, and forgets finished ones after a while. */
+  async function settle(networkId) {
+    const match = matches.get(networkId);
+    if (!match) return null;
+    if (match.state === 'running' && now() >= match.endsAt) await finishMatch(match, 'time');
+    if (match.state !== 'running' && now() - (match.endedAt || match.createdAt) > 3600) { matches.delete(networkId); return null; }
+    return match;
+  }
+  const publicMatch = (match) => match && ({ state: match.state, target: match.target, minutes: match.minutes, hostName: match.hostName,
+    red: match.score.red, blue: match.score.blue, winner: match.winner || '', reason: match.reason || '',
+    startedAt: match.startedAt || 0, endsAt: match.endsAt || 0, endedAt: match.endedAt || 0, now: now(),
+    players: [...match.players.values()].map((p) => ({ userId: p.userId, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths })),
+    feed: match.feed.slice(-5) });
+  const match = (handler) => authed(async (req, res) => {
+    const context = matchContext(req);
+    context.match = await settle(context.networkId);
+    await handler(req, context);
+    res.json({ host: context.host, userId: Number(req.user.id), match: publicMatch(await settle(context.networkId)) });
+  });
+
+  api.post('/match/state', match(async () => {}));
+
+  // Creating replaces a match that is not being played.
+  api.post('/match/create', match(async (req, context) => {
+    hostOnly(context);
+    if (context.match && context.match.state === 'running') throw new ApiError(409, 'running', '枪战正在进行，请先结束');
+    const character = req.user.active_character_id == null ? null : await db.get('SELECT name FROM characters WHERE id = ?', [req.user.active_character_id]);
+    matches.set(context.networkId, { state: 'lobby', hostId: Number(req.user.id), hostName: character ? character.name : req.user.username,
+      target: whole(req.body.target ?? 20, '目标击杀数', 1, 200), minutes: whole(req.body.minutes ?? 15, '时间上限', 1, 60),
+      score: { red: 0, blue: 0 }, players: new Map(), feed: [], debug: [], createdAt: now() });
+  }));
+
+  // Choosing a team (or leaving with team = null). The host may place anyone who is in the room.
+  api.post('/match/team', match(async (req, context) => {
+    const current = needMatch(context);
+    if (current.state !== 'lobby') throw new ApiError(409, 'not_lobby', current.state === 'running' ? '枪战已经开始，不能换队' : '这场枪战已经结束');
+    let userId = Number(req.user.id);
+    if (req.body.userId !== undefined && Number(req.body.userId) !== userId) {
+      hostOnly(context);
+      userId = whole(req.body.userId, '玩家', 1, Number.MAX_SAFE_INTEGER);
+      if (!relay.roleIn(context.networkId, userId)) throw new ApiError(404, 'not_in_room', '这名玩家不在房间里');
+    }
+    const team = req.body.team;
+    if (team == null) { current.players.delete(userId); return; }
+    if (!TEAMS.includes(team)) throw bad('队伍需为 red 或 blue');
+    const mates = [...current.players.values()].filter((p) => p.team === team && p.userId !== userId);
+    if (mates.length >= TEAM_SIZE) throw new ApiError(409, 'team_full', `${team === 'red' ? '红' : '蓝'}队已满 ${TEAM_SIZE} 人`);
+    const owner = await db.get('SELECT u.username, c.id AS character_id, c.name FROM users u LEFT JOIN characters c ON c.id = u.active_character_id WHERE u.id = ?', [userId]);
+    if (!owner) throw new ApiError(404, 'not_found', '玩家不存在');
+    current.players.set(userId, { userId, characterId: owner.character_id == null ? null : Number(owner.character_id),
+      name: owner.name || owner.username, team, kills: 0, deaths: 0, diedAt: 0 });
+  }));
+
+  api.post('/match/start', match(async (_req, context) => {
+    hostOnly(context);
+    const current = needMatch(context);
+    if (current.state !== 'lobby') throw new ApiError(409, 'not_lobby', '这场枪战已经开始或结束，请重新创建');
+    const sizes = TEAMS.map((team) => [...current.players.values()].filter((p) => p.team === team).length);
+    if (sizes[0] < 1 || sizes[1] < 1) throw bad('两队都至少要有 1 人才能开始', 'teams_empty');
+    Object.assign(current, { state: 'running', startedAt: now(), endsAt: now() + current.minutes * 60 });
+  }));
+
+  // The host stops a match early (the score so far stands) or drops one that has not started.
+  api.post('/match/end', match(async (_req, context) => {
+    hostOnly(context);
+    const current = needMatch(context);
+    if (current.state === 'running') await finishMatch(current, 'host');
+    else matches.delete(context.networkId);
+  }));
+
+  // A phone reports that its own player died.
+  api.post('/match/death', match(async (req, context) => {
+    const current = context.match;
+    if (!current || current.state !== 'running') return;
+    const player = current.players.get(Number(req.user.id));
+    if (!player || now() - player.diedAt < 3) return;      // one death per respawn
+    player.diedAt = now();
+    player.deaths++;
+    const scorer = other(player.team);
+    current.score[scorer]++;
+    // The killer is only named when the reporting phone could tell, and only if on the other team.
+    const killer = typeof req.body.killerName === 'string'
+      ? [...current.players.values()].find((p) => p.team === scorer && key(p.name) === key(req.body.killerName)) : null;
+    if (killer) killer.kills++;
+    current.feed.push({ at: now(), victim: player.name, killer: killer ? killer.name : '', team: scorer });
+    if (current.feed.length > 20) current.feed.shift();
+    if (typeof req.body.debug === 'string') {
+      current.debug.push({ at: now(), name: player.name, text: req.body.debug.slice(0, 2000) });
+      if (current.debug.length > 30) current.debug.shift();
+    }
+    if (current.score[scorer] >= current.target) await finishMatch(current, 'target');
+  }));
+
+  api.get('/matches', authed(async (_req, res) => {
+    const rows = await db.all('SELECT * FROM dm_matches ORDER BY id DESC LIMIT 20');
+    const out = [];
+    for (const row of rows) {
+      const players = await db.all('SELECT character_name, team, kills, deaths FROM dm_players WHERE match_id = ? ORDER BY team DESC, deaths, id', [row.id]);
+      out.push({ id: Number(row.id), hostName: row.host_name, target: Number(row.target), red: Number(row.red_score), blue: Number(row.blue_score),
+        winner: row.winner, reason: row.reason, startedAt: Number(row.started_at), endedAt: Number(row.ended_at),
+        players: players.map((p) => ({ name: p.character_name, team: p.team, kills: Number(p.kills), deaths: Number(p.deaths) })) });
+    }
+    res.json({ matches: out });
+  }));
+
+  // What the phones attached to their death reports, for working out who killed whom.
+  api.get('/admin/match-debug', admin(async (_req, res) => {
+    res.json({ matches: [...matches.entries()].map(([networkId, m]) => ({ networkId, state: m.state, debug: m.debug })) });
   }));
 
   // ---- admin ----------------------------------------------------------------
@@ -474,6 +631,16 @@ function createApp(config, db, relay = createRelay(config)) {
       await db.run('DELETE FROM tokens WHERE user_id = ?', [id]);
       await db.run('DELETE FROM rooms WHERE user_id = ?', [id]);
     }
+    res.json({ ok: true });
+  }));
+
+  // Setting a new password for someone who forgot theirs signs them out everywhere.
+  api.post('/admin/users/:id/password', admin(async (req, res) => {
+    const id = Number(req.params.id) || 0;
+    const next = text(req.body.newPassword, '新密码', 8, 72);
+    const result = await db.run('UPDATE users SET password_hash = ? WHERE id = ?', [await hashPassword(next), id]);
+    if (!result.changes && !(await db.get('SELECT id FROM users WHERE id = ?', [id]))) throw new ApiError(404, 'not_found', '用户不存在');
+    if (id !== Number(req.user.id)) await db.run('DELETE FROM tokens WHERE user_id = ?', [id]);
     res.json({ ok: true });
   }));
 

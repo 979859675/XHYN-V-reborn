@@ -73,6 +73,29 @@ const TABLES = (pk) => [
     finished INTEGER NOT NULL DEFAULT 0,
     reason VARCHAR(64) NOT NULL DEFAULT ''
   )`,
+  `CREATE TABLE IF NOT EXISTS dm_matches (
+    id ${pk},
+    host_user_id BIGINT NOT NULL,
+    host_name VARCHAR(32) NOT NULL,
+    target INTEGER NOT NULL,
+    minutes INTEGER NOT NULL,
+    red_score INTEGER NOT NULL,
+    blue_score INTEGER NOT NULL,
+    winner VARCHAR(8) NOT NULL,
+    reason VARCHAR(16) NOT NULL,
+    started_at BIGINT NOT NULL,
+    ended_at BIGINT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS dm_players (
+    id ${pk},
+    match_id BIGINT NOT NULL,
+    character_id BIGINT NULL,
+    character_name VARCHAR(32) NOT NULL,
+    team VARCHAR(8) NOT NULL,
+    kills INTEGER NOT NULL DEFAULT 0,
+    deaths INTEGER NOT NULL DEFAULT 0,
+    won INTEGER NOT NULL DEFAULT 0
+  )`,
   `CREATE TABLE IF NOT EXISTS saves (
     character_id BIGINT PRIMARY KEY,
     size BIGINT NOT NULL,
@@ -86,6 +109,8 @@ const INDEXES = [
   ['idx_rooms_heartbeat', 'rooms(heartbeat_at)'],
   ['idx_results_race', 'race_results(race_id)'],
   ['idx_results_character', 'race_results(character_id)'],
+  ['idx_dm_players_match', 'dm_players(match_id)'],
+  ['idx_dm_players_character', 'dm_players(character_id)'],
 ];
 
 async function openSqlite(config) {

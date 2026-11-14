@@ -218,3 +218,59 @@ test('test bots: host or admin sets the count, the host reads it on heartbeat an
   assert.equal(two.virtualIp, '10.77.0.3');
   assert.notEqual(one.token, mine.token);
 });
+
+test('team deathmatch: teams, deaths score for the other side, target ends it, result is stored', async () => {
+  const hostToken = await player('dmhost'), guestToken = await player('dmguest'), outsider = await player('dmout');
+  const net = (await call('POST', '/api/relay/host', hostToken)).data.relay.networkId;
+  await call('POST', '/api/relay/join', guestToken, { networkId: net });
+  const body = (more = {}) => ({ networkId: net, ...more });
+
+  assert.equal((await call('POST', '/api/match/state', outsider, body())).status, 403, 'only people in the room see it');
+  assert.equal((await call('POST', '/api/match/state', guestToken, body())).data.match, null);
+  assert.equal((await call('POST', '/api/match/create', guestToken, body({ target: 2 }))).status, 403, 'only the host creates');
+  const created = (await call('POST', '/api/match/create', hostToken, body({ target: 2, minutes: 5 }))).data;
+  assert.equal(created.host, true);
+  assert.equal(created.match.state, 'lobby');
+
+  assert.equal((await call('POST', '/api/match/start', hostToken, body())).status, 400, 'both teams need a player');
+  await call('POST', '/api/match/team', hostToken, body({ team: 'red' }));
+  assert.equal((await call('POST', '/api/match/team', guestToken, body({ team: 'green' }))).status, 400);
+  const joined = (await call('POST', '/api/match/team', guestToken, body({ team: 'blue' }))).data.match;
+  assert.deepEqual(joined.players.map((p) => `${p.name}:${p.team}`).sort(), ['dmguestC:blue', 'dmhostC:red']);
+  assert.equal((await call('POST', '/api/match/start', guestToken, body())).status, 403);
+  assert.equal((await call('POST', '/api/match/death', guestToken, body())).data.match.blue, 0, 'deaths before the start do not count');
+  assert.equal((await call('POST', '/api/match/start', hostToken, body())).data.match.state, 'running');
+  assert.equal((await call('POST', '/api/match/team', guestToken, body({ team: 'red' }))).status, 409, 'no switching mid-match');
+
+  let state = (await call('POST', '/api/match/death', guestToken, body({ killerName: 'dmhostC', debug: 'aa' }))).data.match;
+  assert.deepEqual([state.red, state.blue], [1, 0]);
+  assert.equal(state.players.find((p) => p.name === 'dmhostC').kills, 1);
+  state = (await call('POST', '/api/match/death', guestToken, body())).data.match;
+  assert.deepEqual([state.red, state.blue], [1, 0], 'a second report right away is the same death');
+  state = (await call('POST', '/api/match/death', hostToken, body())).data.match;
+  assert.deepEqual([state.red, state.blue], [1, 1]);
+  await new Promise((resolve) => setTimeout(resolve, 3100));
+  state = (await call('POST', '/api/match/death', hostToken, body())).data.match;
+  assert.deepEqual([state.red, state.blue, state.state, state.winner, state.reason], [1, 2, 'finished', 'blue', 'target']);
+
+  const stored = (await call('GET', '/api/matches', outsider)).data.matches[0];
+  assert.deepEqual([stored.red, stored.blue, stored.winner, stored.players.length], [1, 2, 'blue', 2]);
+  const board = (await call('GET', '/api/leaderboard', outsider)).data.leaderboard;
+  const guestRow = board.find((row) => row.name === 'dmguestC'), hostRow = board.find((row) => row.name === 'dmhostC');
+  assert.deepEqual([guestRow.dmMatches, guestRow.dmWins, guestRow.dmDeaths], [1, 1, 1]);
+  assert.deepEqual([hostRow.dmWins, hostRow.dmKills, hostRow.dmDeaths], [0, 1, 2]);
+  assert.equal((await call('POST', '/api/match/create', hostToken, body({ target: 5 }))).data.match.state, 'lobby', 'a finished match can be replaced');
+});
+
+test('an administrator can set a new password for a user', async () => {
+  const userToken = await player('forgetful'), adminToken = await player('pwadmin');
+  await db.run("UPDATE users SET is_admin = 1 WHERE username = 'pwadmin'");
+  const target = await db.get("SELECT id FROM users WHERE username = 'forgetful'");
+  assert.equal((await call('POST', `/api/admin/users/${target.id}/password`, userToken, { newPassword: 'another secret' })).status, 403);
+  assert.equal((await call('POST', `/api/admin/users/${target.id}/password`, adminToken, { newPassword: 'short' })).status, 400);
+  assert.equal((await call('POST', `/api/admin/users/${target.id}/password`, adminToken, { newPassword: 'another secret' })).status, 200);
+  assert.equal((await call('GET', '/api/me', userToken)).status, 401, 'the old sign-in stops working');
+  const login = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'forgetful', password: 'another secret' }) });
+  assert.equal(login.status, 200);
+});

@@ -113,6 +113,13 @@ function createRelay(config) {
     return !!member && member.endpoints.size > 0;
   }
 
+  /** 'host', 'member' or null: this user's place in a live network. */
+  function roleIn(networkId, userId) {
+    const network = networks.get(networkId);
+    if (!network || !network.members.has(userId)) return null;
+    return network.ownerId === userId ? 'host' : 'member';
+  }
+
   function closeFor(userId) {
     const network = byOwner.get(userId);
     if (network) remove(network);
@@ -211,7 +218,7 @@ function createRelay(config) {
     });
   }
 
-  return { host, join, bot, reached, networkOf, closeFor, start, close, stats,
+  return { host, join, bot, reached, networkOf, roleIn, closeFor, start, close, stats,
     get port() { return port; }, get networks() { return networks.size; }, HOST_IP };
 }
 

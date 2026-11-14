@@ -188,14 +188,38 @@
     const { leaderboard } = await api('GET', '/leaderboard');
     const body = $('board').tBodies[0];
     body.replaceChildren();
-    if (!leaderboard.length) return body.append(el('tr', {}, el('td', { colspan: '6', class: 'sub' }, '还没有角色上榜。')));
+    if (!leaderboard.length) return body.append(el('tr', {}, el('td', { colspan: '10', class: 'sub' }, '还没有角色上榜。')));
     leaderboard.forEach((row, index) => body.append(el('tr', {},
       el('td', {}, String(index + 1)), el('td', {}, row.name),
       el('td', { class: 'num' }, String(row.wins)), el('td', { class: 'num' }, String(row.finishes)),
-      el('td', { class: 'num' }, String(row.races)), el('td', { class: 'num' }, duration(row.playSeconds)))));
+      el('td', { class: 'num' }, String(row.races)),
+      el('td', { class: 'num' }, String(row.dmWins || 0)), el('td', { class: 'num' }, String(row.dmMatches || 0)),
+      el('td', { class: 'num' }, String(row.dmKills || 0)), el('td', { class: 'num' }, String(row.dmDeaths || 0)),
+      el('td', { class: 'num' }, duration(row.playSeconds)))));
+  }
+
+  const TEAM_NAMES = { red: '红队', blue: '蓝队', draw: '平局' };
+  async function loadMatches() {
+    const { matches } = await api('GET', '/matches');
+    const list = $('matches');
+    list.replaceChildren();
+    if (!matches.length) return list.append(empty('还没有枪战记录。房主在游戏里办完一场枪战后，战绩会出现在这里。'));
+    const REASONS = { target: '达到目标击杀数', time: '时间到', host: '房主提前结束' };
+    for (const match of matches) {
+      const results = el('ol', { class: 'results' });
+      for (const entry of match.players) results.append(el('li', {},
+        el('span', { class: 'pos' }, TEAM_NAMES[entry.team] || entry.team), el('span', {}, entry.name),
+        el('span', { class: 'time' }, `击杀 ${entry.kills} · 阵亡 ${entry.deaths}`)));
+      list.append(el('div', { class: 'item' },
+        el('div', { class: 'grow' },
+          el('div', { class: 'title' }, `红队 ${match.red} : ${match.blue} 蓝队 · ${match.winner === 'draw' ? '平局' : `${TEAM_NAMES[match.winner]}获胜`}`),
+          el('div', { class: 'sub' }, `房主 ${match.hostName} · 目标 ${match.target} · ${REASONS[match.reason] || match.reason} · ${when(match.endedAt)}`)),
+        results));
+    }
   }
 
   async function loadRaces() {
+    await loadMatches();
     const { races } = await api('GET', '/races');
     const list = $('races');
     list.replaceChildren();
@@ -233,7 +257,13 @@
         if (!row.banned && !confirm(`封禁用户“${row.username}”？对方会被立即登出。`)) return;
         await api('POST', `/admin/users/${row.id}/ban`, { banned: !row.banned }); await loadUsers();
       }) }, row.banned ? '解封' : '封禁');
-      body.append(el('tr', {}, el('td', {}, String(row.id)), name, el('td', {}, when(row.createdAt)), el('td', {}, when(row.lastLoginAt)), el('td', {}, action)));
+      const reset = el('button', { class: 'ghost', onclick: (e) => act(e.target, async () => {
+        const next = prompt(`给用户“${row.username}”设置新密码（至少 8 位）：`);
+        if (next === null) return;
+        await api('POST', `/admin/users/${row.id}/password`, { newPassword: next });
+        toast(`已重置“${row.username}”的密码`);
+      }) }, '重置密码');
+      body.append(el('tr', {}, el('td', {}, String(row.id)), name, el('td', {}, when(row.createdAt)), el('td', {}, when(row.lastLoginAt)), el('td', {}, reset, ' ', action)));
     }
   }
 
