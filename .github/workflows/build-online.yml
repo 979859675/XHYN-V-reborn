@@ -6,6 +6,7 @@ on:
   push:
     paths:
       - modifications/online/VERSION
+      - modifications/online/signing/release.p12
       - .github/workflows/build-online.yml
 
 permissions:
