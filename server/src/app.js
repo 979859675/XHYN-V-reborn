@@ -318,9 +318,9 @@ function createApp(config, db, relay = createRelay(config)) {
   const roomFor = (row, viewer) => {
     const more = extra(row.id);
     const room = { ...publicRoom(row), bots: more.bots, botMirror: more.mirror };
+    if (room.public && room.relayNetwork) room.ffa = publicArena(arenas.get(room.relayNetwork), 0);     // the standing is for everyone to see
     if (viewer.is_admin || Number(row.user_id) === Number(viewer.id)) {
       if (room.relayNetwork) room.match = publicMatch(matches.get(room.relayNetwork));
-      if (room.public && room.relayNetwork) room.ffa = publicArena(arenas.get(room.relayNetwork), 0);
       room.debug = more.debug;
       // Rooms are listed over HTTPS; the game itself needs the UDP port. Say whether that part works.
       if (room.relayNetwork) room.relayReached = relay.reached(Number(row.user_id));
@@ -486,8 +486,19 @@ function createApp(config, db, relay = createRelay(config)) {
     res.status(201).json({ ok: true, raceId: id });
   }));
 
-  api.get('/races', authed(async (_req, res) => {
-    const races = await db.all('SELECT * FROM races ORDER BY id DESC LIMIT 20');
+  /** "?page=2&size=20" of a list request: sizes up to 100, 20 by default. */
+  function paging(req) {
+    const size = Math.min(100, Math.max(1, Number.parseInt(req.query.size, 10) || 20));
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    return { page, size, limit: `LIMIT ${size} OFFSET ${(page - 1) * size}` };
+  }
+  const total = async (sql, params = []) => Number((await db.get(`SELECT COUNT(*) AS n FROM ${sql}`, params)).n);
+  /** A search word as a LIKE pattern; "" when there is none. */
+  const like = (req) => (typeof req.query.q === 'string' && req.query.q.trim() ? `%${req.query.q.trim().slice(0, 32).replace(/[\\%_]/g, '\\$&')}%` : '');
+
+  api.get('/races', authed(async (req, res) => {
+    const { page, size, limit } = paging(req);
+    const races = await db.all(`SELECT * FROM races ORDER BY id DESC ${limit}`);
     const out = [];
     for (const race of races) {
       const rows = await db.all('SELECT character_name, position, time_ms, finished, reason FROM race_results WHERE race_id = ? ORDER BY finished DESC, position, id', [race.id]);
@@ -495,7 +506,7 @@ function createApp(config, db, relay = createRelay(config)) {
         results: rows.map((r) => ({ name: r.character_name, finished: !!r.finished, position: r.position == null ? null : Number(r.position),
           timeMs: r.time_ms == null ? null : Number(r.time_ms), reason: r.reason })) });
     }
-    res.json({ races: out });
+    res.json({ races: out, page, size, total: await total('races') });
   }));
 
   const STATS = `SELECT c.id, c.name, c.model, c.play_seconds,
@@ -523,7 +534,7 @@ function createApp(config, db, relay = createRelay(config)) {
   }
 
   api.get('/leaderboard', route(async (_req, res) => {
-    const rows = await db.all(`${STATS} GROUP BY c.id, c.name, c.model, c.play_seconds ORDER BY wins DESC, finishes DESC, c.play_seconds DESC, c.id LIMIT 50`);
+    const rows = await db.all(`${STATS} GROUP BY c.id, c.name, c.model, c.play_seconds ORDER BY wins DESC, finishes DESC, c.play_seconds DESC, c.id LIMIT 300`);
     res.json({ leaderboard: await withDeathmatch(rows.map(publicStats)) });
   }));
 
@@ -615,7 +626,7 @@ function createApp(config, db, relay = createRelay(config)) {
     const current = await currentSeason();
     const before = await db.get('SELECT * FROM seasons WHERE id < ? ORDER BY id DESC LIMIT 1', [current.id]);
     res.json({ season: { ...current, now: now() }, ranks: RANKS.map(([points, name]) => ({ points, name })), points: POINTS,
-      board: await seasonTop(current.id, 50),
+      board: await seasonTop(current.id, 300),
       last: before ? { id: Number(before.id), startedAt: Number(before.started_at), endsAt: Number(before.ends_at), top: await seasonTop(Number(before.id), 3) } : null });
   }));
   api.get('/me/rank', authed(async (req, res) => {
@@ -996,12 +1007,23 @@ function createApp(config, db, relay = createRelay(config)) {
 
   api.get('/ffa/board', route(async (req, res) => {
     const range = ['day', 'week', 'all'].includes(req.query.range) ? req.query.range : 'all';
-    res.json({ range, since: since(range), board: (await ffaTotals(since(range))).slice(0, 50) });
+    res.json({ range, since: since(range), board: (await ffaTotals(since(range))).slice(0, 300) });
   }));
 
   api.get('/admin/ffa', admin(async (_req, res) => {
     const rows = await db.all('SELECT * FROM ffa_kills ORDER BY id DESC LIMIT 200');
     res.json({ players: await ffaTotals(0), today: await ffaTotals(since('day')),
+      kills: rows.map((r) => ({ id: Number(r.id), at: Number(r.at), room: Number(r.room), killer: r.killer_name, victim: r.victim_name })) });
+  }));
+
+  // The kill log, a page at a time; "q" looks for a name on either side.
+  api.get('/admin/ffa/kills', admin(async (req, res) => {
+    const { page, size, limit } = paging(req);
+    const word = like(req);
+    const where = word ? "WHERE killer_name LIKE ? ESCAPE '\\' OR victim_name LIKE ? ESCAPE '\\'" : '';
+    const params = word ? [word, word] : [];
+    const rows = await db.all(`SELECT * FROM ffa_kills ${where} ORDER BY id DESC ${limit}`, params);
+    res.json({ page, size, total: await total(`ffa_kills ${where}`, params),
       kills: rows.map((r) => ({ id: Number(r.id), at: Number(r.at), room: Number(r.room), killer: r.killer_name, victim: r.victim_name })) });
   }));
 
@@ -1017,8 +1039,9 @@ function createApp(config, db, relay = createRelay(config)) {
     res.json({ ok: true, removed: result.changes });
   }));
 
-  api.get('/matches', authed(async (_req, res) => {
-    const rows = await db.all('SELECT * FROM dm_matches ORDER BY id DESC LIMIT 20');
+  api.get('/matches', authed(async (req, res) => {
+    const { page, size, limit } = paging(req);
+    const rows = await db.all(`SELECT * FROM dm_matches ORDER BY id DESC ${limit}`);
     const out = [];
     for (const row of rows) {
       const players = await db.all('SELECT character_name, team, kills, deaths FROM dm_players WHERE match_id = ? ORDER BY team DESC, deaths, id', [row.id]);
@@ -1026,7 +1049,7 @@ function createApp(config, db, relay = createRelay(config)) {
         winner: row.winner, reason: row.reason, startedAt: Number(row.started_at), endedAt: Number(row.ended_at),
         players: players.map((p) => ({ name: p.character_name, team: p.team, kills: Number(p.kills), deaths: Number(p.deaths) })) });
     }
-    res.json({ matches: out });
+    res.json({ matches: out, page, size, total: await total('dm_matches') });
   }));
 
   // What the phones attached to their death reports, for working out who killed whom.
@@ -1035,9 +1058,12 @@ function createApp(config, db, relay = createRelay(config)) {
   }));
 
   // ---- admin ----------------------------------------------------------------
-  api.get('/admin/users', admin(async (_req, res) => {
-    const rows = await db.all('SELECT id, username, is_admin, banned, created_at, last_login_at FROM users ORDER BY id DESC LIMIT 200');
-    res.json({ users: rows.map((u) => ({ id: Number(u.id), username: u.username, isAdmin: !!u.is_admin, banned: !!u.banned,
+  api.get('/admin/users', admin(async (req, res) => {
+    const { page, size, limit } = req.query.page ? paging(req) : { page: 1, size: 200, limit: 'LIMIT 200' };
+    const word = like(req);
+    const where = word ? "WHERE username LIKE ? ESCAPE '\\'" : '';
+    const rows = await db.all(`SELECT id, username, is_admin, banned, created_at, last_login_at FROM users ${where} ORDER BY id DESC ${limit}`, word ? [word] : []);
+    res.json({ page, size, total: await total(`users ${where}`, word ? [word] : []), users: rows.map((u) => ({ id: Number(u.id), username: u.username, isAdmin: !!u.is_admin, banned: !!u.banned,
       createdAt: Number(u.created_at), lastLoginAt: Number(u.last_login_at) })) });
   }));
 
