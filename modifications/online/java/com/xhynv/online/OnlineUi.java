@@ -215,15 +215,17 @@ public final class OnlineUi {
             status.setText(line);
             if (!character.isEmpty()) {
                 // What can be played, each with its way in.
-                Runnable create = new Runnable() { @Override public void run() { Online.createRoom(activity); } };
-                Runnable rooms = new Runnable() { @Override public void run() { showRooms(); } };
+                Runnable race = new Runnable() { @Override public void run() { Online.createRoom(activity, "race"); } };
+                Runnable team = new Runnable() { @Override public void run() { Online.createRoom(activity, "team"); } };
+                Runnable raceRooms = new Runnable() { @Override public void run() { showRooms("race"); } };
+                Runnable teamRooms = new Runnable() { @Override public void run() { showRooms("team"); } };
                 Runnable open = new Runnable() { @Override public void run() { Online.enterPublic(activity); } };
                 addHeading("支持的玩法");
                 addMode("赛车", "街头赛车，最多 10 人。进房后房主在“房主专属”里开赛，成绩计入排行榜。",
-                        new String[] { "创建房间", "在线房间" }, new Runnable[] { create, rooms });
+                        new String[] { "创建赛车房", "赛车房列表" }, new Runnable[] { race, raceRooms });
                 addMode("团队竞技", "红蓝两队，最多 5 对 5，先达到目标击杀数的队伍获胜。进房后房主在悬浮窗里开赛。",
-                        new String[] { "创建房间", "在线房间" }, new Runnable[] { create, rooms });
-                addMode("个人对战", "公共对战房，随时进入，各打各的，累计个人击杀；有今日榜、本周榜和总榜。",
+                        new String[] { "创建团队竞技房", "团队竞技房列表" }, new Runnable[] { team, teamRooms });
+                addMode("个人对战", "公共对战房，随时进入。每局先到 20 分获胜，10 分钟到点按得分结算；连杀有悬赏，战绩计入赛季段位。",
                         new String[] { "进入公共对战房" }, new Runnable[] { open });
             }
             addButton(character.isEmpty() ? "选择角色" : "切换角色", character.isEmpty(), new Runnable() { @Override public void run() { showCharacters(); } });
@@ -451,8 +453,10 @@ public final class OnlineUi {
     // ---- rooms -----------------------------------------------------------------------------------
 
     /** The rooms that are open. Picking one joins it at once, through the server. */
-    private void showRooms() {
+    /** The rooms of one mode ("race" or "team"); rooms that do not say what they are for are listed in both. */
+    private void showRooms(final String mode) {
         final String token = Online.token();
+        final String what = "race".equals(mode) ? "赛车房" : "团队竞技房";
         Online.async(new Online.Work<Map<String, Object>>() {
             @Override public Map<String, Object> run() throws ApiException { return Online.api.call("GET", "/rooms", null, token); }
         }, new Online.Done<Map<String, Object>>() {
@@ -462,14 +466,16 @@ public final class OnlineUi {
                 final List<Map<String, Object>> rooms = new ArrayList<Map<String, Object>>();
                 for (Object item : Json.list(data, "rooms")) {
                     @SuppressWarnings("unchecked") Map<String, Object> room = (Map<String, Object>) item;
-                    if (Json.number(room, "relayNetwork") > 0) rooms.add(room);
+                    if (Json.number(room, "relayNetwork") <= 0 || Json.number(room, "public") > 0) continue;
+                    String made = Online.modeOf(Json.string(room, "title"));
+                    if (made.isEmpty() || made.equals(mode)) rooms.add(room);
                 }
-                AlertDialog.Builder builder = new AlertDialog.Builder(activity).setTitle("在线房间").setNegativeButton("关闭", null)
+                AlertDialog.Builder builder = new AlertDialog.Builder(activity).setTitle(what + "列表").setNegativeButton("关闭", null)
                         .setNeutralButton("刷新", new DialogInterface.OnClickListener() {
-                            @Override public void onClick(DialogInterface dialog, int which) { showRooms(); }
+                            @Override public void onClick(DialogInterface dialog, int which) { showRooms(mode); }
                         });
                 if (rooms.isEmpty()) {
-                    builder.setMessage("现在没有在线房间。可以自己创建一个，或进入公共对战房。");
+                    builder.setMessage("现在没有" + what + "。可以自己创建一个。");
                 } else {
                     String[] labels = new String[rooms.size()];
                     for (int i = 0; i < labels.length; i++) {

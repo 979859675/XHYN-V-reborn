@@ -15,6 +15,8 @@ final class RoomSync {
         boolean virtualLan;
         /** This room is a public free-for-all room the server asked this phone to open. */
         boolean publicRoom;
+        /** The room's name in the list; "" lets the server name it. */
+        String title = "";
         String code = "";
         String address = "";
         int players;
@@ -61,7 +63,7 @@ final class RoomSync {
         String token = account.token();
         boolean signedIn = token != null && !token.isEmpty();
         boolean listable = signedIn && s.hosting && s.code.matches("[0-9]{6}");
-        String key = listable ? s.code + '|' + s.address + '|' + s.virtualLan + '|' + s.publicRoom : "";
+        String key = listable ? s.code + '|' + s.address + '|' + s.virtualLan + '|' + s.publicRoom + '|' + s.title : "";
         try {
             // Hosting stopped, or the room became a different one: take the old listing down first.
             if (roomId != 0 && !key.equals(roomKey)) closeRoom();
@@ -71,9 +73,11 @@ final class RoomSync {
                 } else if (roomId == 0) {
                     if (now >= nextRoomAt) {
                         nextRoomAt = now + RETRY_MS;
-                        Map<String, Object> made = api.call("POST", "/rooms", Json.of(
+                        Map<String, Object> body = Json.of(
                                 "hostAddress", s.address, "roomCode", s.code, "virtualLan", s.virtualLan, "public", s.publicRoom,
-                                "maxPlayers", clamp(s.limit, 2, 10), "gameVersion", gameVersion), token);
+                                "maxPlayers", clamp(s.limit, 2, 10), "gameVersion", gameVersion);
+                        if (s.title != null && !s.title.isEmpty()) body.put("title", s.title);
+                        Map<String, Object> made = api.call("POST", "/rooms", body, token);
                         roomId = Json.number(Json.map(made, "room"), "id");
                         roomToken = token;
                         roomKey = key;

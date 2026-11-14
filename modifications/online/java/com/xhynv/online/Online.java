@@ -36,6 +36,15 @@ public final class Online {
 
     /** The player is in, or on the way into, a public free-for-all room ("公共对战房"). */
     static volatile boolean publicMode;
+    /** What the room this phone is in was made for: "race", "team", or "" (a public room, or a room that does not say). */
+    static volatile String roomMode = "";
+    private static final String RACE_ROOM = " 的赛车房", TEAM_ROOM = " 的团队竞技房";
+
+    /** The mode a room's name in the list stands for. */
+    static String modeOf(String title) {
+        if (title == null) return "";
+        return title.endsWith(RACE_ROOM) ? "race" : title.endsWith(TEAM_ROOM) ? "team" : "";
+    }
     private static volatile boolean enteringPublic, startingPublic, starting;
 
     interface Work<T> { T run() throws ApiException; }
@@ -185,6 +194,7 @@ public final class Online {
             Relay.active = null;
             // A session started from the game's own buttons is an ordinary room.
             if (!startingPublic) publicMode = false;
+            if (!starting) roomMode = "";
             String name = characterName();
             if (!signedIn() || name.isEmpty()) return refuse(NEED_LOGIN, true);
             long now = System.currentTimeMillis();
@@ -224,7 +234,11 @@ public final class Online {
     static void enterPublic(Context context) { launch(context, "public", null); }
 
     /** Opens a room of this phone's own, listed for others to join. */
-    static void createRoom(Context context) { launch(context, "create", null); }
+    static void createRoom(Context context, String mode) {
+        pendingMode = mode == null ? "" : mode;
+        launch(context, "create", null);
+    }
+    private static volatile String pendingMode = "";
 
     /** Joins a room picked from the list. */
     static void joinRoom(Context context, Map<String, Object> room) { launch(context, "join", room); }
@@ -272,6 +286,7 @@ public final class Online {
                         room = Json.map(reply, "room");
                     }
                     final boolean host = "host".equals(action);
+                    final String wanted = open ? "" : "create".equals(kind) ? pendingMode : modeOf(room == null ? null : Json.string(room, "title"));
                     final String code;
                     if (host) {
                         refreshHostRelay(token);
@@ -290,6 +305,7 @@ public final class Online {
                         @Override public void run() {
                             startingPublic = open;
                             starting = true;
+                            roomMode = wanted;
                             try {
                                 if (host) LanSession.host(context, name);
                                 else LanSession.join(context, name, Relay.HOST_IP, code);
@@ -311,7 +327,8 @@ public final class Online {
                                     @Override public void run() { try { LanSession.setPlayerLimit(context, 10); } catch (Throwable ignored) { } }
                                 }, 1500);
                             } else {
-                                toast(host ? "房间已创建，其他玩家可以在“在线房间”里加入。现在进入游戏即可。" : "已加入房间。现在进入游戏即可。");
+                                String what = "race".equals(wanted) ? "赛车房" : "team".equals(wanted) ? "团队竞技房" : "房间";
+                                toast(host ? what + "已创建，其他玩家可以在对应玩法的房间列表里加入。现在进入游戏即可。" : "已加入" + what + "。现在进入游戏即可。");
                             }
                         }
                     });
@@ -481,6 +498,8 @@ public final class Online {
             boolean relayed = Relay.active != null && Relay.active == Relay.hostSession;
             s.virtualLan = !relayed && state.virtualNetwork;
             s.publicRoom = relayed && publicMode;
+            String mode = roomMode;
+            if (!s.publicRoom && !mode.isEmpty()) s.title = characterName() + ("race".equals(mode) ? RACE_ROOM : TEAM_ROOM);
             s.address = relayed ? Relay.HOST_IP : address(state.virtualNetwork);
             try {
                 s.debug = OnlineBridge.diagnostics() + relayNote() + (botError.isEmpty() ? "" : " | " + botError);

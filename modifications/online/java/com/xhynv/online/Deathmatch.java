@@ -677,7 +677,8 @@ public final class Deathmatch {
             Activity activity = gameActivity();
             Map<String, Object> current = match;
             Map<String, Object> field = arena;
-            boolean visible = activity != null && inRoom;
+            // A racing room has no window of its own: the race is run from the game's host tools.
+            boolean visible = activity != null && inRoom && (field != null || !"race".equals(Online.roomMode));
             if (!visible) {
                 if (root != null) root.setVisibility(View.GONE);
                 return;
@@ -898,7 +899,7 @@ public final class Deathmatch {
         List<Item> items = new ArrayList<Item>();
         String state = current == null ? "" : Json.string(current, "state");
         if (current == null && !host) {
-            items.add(new Item(1, "房主还没有开团队竞技。\n赛车由房主在“房主专属”里开启。", null));
+            items.add(new Item(1, "team".equals(Online.roomMode) ? "房主还没有开团队竞技，等房主创建后在这里选队。" : "房主还没有开团队竞技。\n赛车由房主在“房主专属”里开启。", null));
             return items;
         }
         if (current == null) {
