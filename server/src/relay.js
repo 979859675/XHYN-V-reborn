@@ -120,6 +120,12 @@ function createRelay(config) {
     return network.ownerId === userId ? 'host' : 'member';
   }
 
+  /** How many real players (not test bots) are in this user's own network, the owner included. */
+  function realCount(ownerId) {
+    const network = byOwner.get(ownerId);
+    return network ? [...network.members.keys()].filter((id) => typeof id === 'number').length : 0;
+  }
+
   function closeFor(userId) {
     const network = byOwner.get(userId);
     if (network) remove(network);
@@ -218,7 +224,7 @@ function createRelay(config) {
     });
   }
 
-  return { host, join, bot, reached, networkOf, roleIn, closeFor, start, close, stats,
+  return { host, join, bot, reached, networkOf, roleIn, realCount, closeFor, start, close, stats,
     get port() { return port; }, get networks() { return networks.size; }, HOST_IP };
 }
 

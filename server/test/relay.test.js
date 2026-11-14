@@ -22,7 +22,9 @@ async function call(method, url, token, body) {
 async function player(name) {
   const response = await fetch(base + '/api/auth/register', { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: name, password: 'correct horse' }) });
-  const token = (await response.json()).token;
+  const registered = await response.json();
+  assert.ok(registered.token, `${name}: ${JSON.stringify(registered)}`);
+  const token = registered.token;
   await call('POST', '/api/characters', token, { name: `${name}C` });
   return token;
 }
@@ -198,7 +200,8 @@ test('test bots: host or admin sets the count, the host reads it on heartbeat an
   const room = (await call('POST', '/api/rooms', host, { hostAddress: '10.77.0.1', roomCode: '123456' })).data.room;
   assert.equal(room.relayNetwork, mine.networkId);
   assert.equal((await call('POST', `/api/rooms/${room.id}/bots`, other, { count: 2 })).status, 403);
-  assert.equal((await call('POST', `/api/rooms/${room.id}/bots`, host, { count: 4 })).status, 400);
+  assert.equal((await call('POST', `/api/rooms/${room.id}/bots`, host, { count: 10 })).status, 400);
+  assert.equal((await call('POST', `/api/rooms/${room.id}/bots`, host, { fill: true })).data.room.bots, room.maxPlayers - 1, 'fill takes every free seat');
   const set = await call('POST', `/api/rooms/${room.id}/bots`, host, { count: 2, mirror: true });
   assert.equal(set.status, 200);
   assert.equal(set.data.room.bots, 2);
@@ -279,4 +282,42 @@ test('an administrator can set a new password for a user', async () => {
   const login = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: 'forgetful', password: 'another secret' }) });
   assert.equal(login.status, 200);
+});
+
+test('team deathmatch with bots: they fill the smaller team, go down after enough hits, and can be knocked down from the web page', async () => {
+  const hostToken = await player('tdmhost'), admin = await player('botadmin'), stranger = await player('botstranger');
+  await db.run("UPDATE users SET is_admin = 1 WHERE username = 'botadmin'");
+  const opened = await call('POST', '/api/relay/host', hostToken);
+  assert.equal(opened.status, 200, JSON.stringify(opened.data));
+  const net = opened.data.relay.networkId;
+  const bots = [{ index: 1, slot: 2 }, { index: 2, slot: 3 }, { index: 3, slot: 4 }];
+  const body = (more = {}) => ({ networkId: net, slot: 1, bots, ...more });
+
+  let state = (await call('POST', '/api/match/create', hostToken, body({ target: 3, botHits: 2, record: false }))).data.match;
+  assert.deepEqual([state.botHits, state.record], [2, false]);
+  assert.deepEqual(state.players.map((p) => `${p.name}:${p.team}`), ['人机1:red', '人机2:blue', '人机3:red']);
+  state = (await call('POST', '/api/match/team', hostToken, body({ team: 'red' }))).data.match;
+  assert.deepEqual(state.players.map((p) => `${p.name}:${p.team}`).sort(), ['tdmhostC:red', '人机1:blue', '人机2:red', '人机3:blue'], 'bots move to keep the teams even');
+  state = (await call('POST', '/api/match/state', hostToken, { networkId: net, slot: 1, bots: bots.slice(0, 2) })).data.match;
+  assert.equal(state.players.length, 3, 'a bot that left the room leaves the match');
+  assert.equal((await call('POST', '/api/match/start', hostToken, body({ bots: bots.slice(0, 2) }))).data.match.state, 'running');
+
+  // 人机1 is blue with member number 2, 人机2 is red (the host's own team) with member number 3.
+  state = (await call('POST', '/api/match/state', hostToken, body({ hits: [2, 3], counts: [1, 5] }))).data.match;
+  assert.deepEqual([state.red, state.blue], [0, 0], 'one hit is not enough, and hitting your own bot never scores');
+  state = (await call('POST', '/api/match/state', hostToken, body({ hits: [2] }))).data.match;
+  assert.deepEqual([state.red, state.blue], [1, 0]);
+  assert.equal(state.players.find((p) => p.name === 'tdmhostC').kills, 1);
+  assert.equal(state.feed[0].killer, 'tdmhostC');
+
+  const victim = state.players.find((p) => p.name === '人机2'), me = state.players.find((p) => p.name === 'tdmhostC');
+  assert.equal((await call('POST', '/api/match/simulate', stranger, { networkId: net, victim: victim.id })).status, 403);
+  state = (await call('POST', '/api/match/simulate', admin, { networkId: net, victim: victim.id })).data.match;
+  assert.deepEqual([state.red, state.blue], [1, 1]);
+  state = (await call('POST', '/api/match/simulate', hostToken, { networkId: net, victim: me.id })).data.match;
+  assert.deepEqual([state.red, state.blue], [1, 2]);
+  state = (await call('POST', '/api/match/simulate', hostToken, { networkId: net, victim: me.id })).data.match;
+  assert.deepEqual([state.blue, state.state, state.winner], [3, 'finished', 'blue']);
+  const before = (await call('GET', '/api/matches', admin)).data.matches.filter((m) => m.hostName === 'tdmhostC');
+  assert.equal(before.length, 0, 'a match marked as not recorded is not stored');
 });

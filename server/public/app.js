@@ -110,6 +110,27 @@
   }
   $('tabs').addEventListener('click', (event) => { if (event.target.dataset.view) open(event.target.dataset.view); });
 
+  /** The room's team match as the host or an administrator sees it, with a "knock down" button per player for testing. */
+  function matchBox(room) {
+    const match = room.match;
+    const STATES = { lobby: '选队中', running: '进行中', finished: '已结束' };
+    const box = el('div', { class: 'sub' },
+      `团队竞技（${STATES[match.state] || match.state}）：红队 ${match.red} : ${match.blue} 蓝队 · 目标 ${match.target} · 击倒人机需命中 ${match.botHits} 次 · ${match.record ? '记录战绩' : '本场不记录'}`);
+    for (const team of ['red', 'blue']) {
+      const line = el('div', {}, `${team === 'red' ? '红队' : '蓝队'}：`);
+      const players = match.players.filter((p) => p.team === team);
+      if (!players.length) line.append('（空）');
+      for (const p of players) {
+        line.append(`${p.name}（击杀 ${p.kills} / 阵亡 ${p.deaths}） `);
+        if (match.state === 'running') line.append(el('button', { class: 'ghost', onclick: (e) => act(e.target, async () => {
+          await api('POST', '/match/simulate', { networkId: room.relayNetwork, victim: p.id }); await loadRooms();
+        }) }, '模拟阵亡'), ' ');
+      }
+      box.append(line);
+    }
+    return box;
+  }
+
   async function loadRooms() {
     const { rooms } = await api('GET', '/rooms');
     const list = $('rooms');
@@ -127,7 +148,11 @@
         toast('已设置。房主手机会在 10 秒内照做（需要新版客户端）');
       });
       const botButtons = (user.isAdmin || room.debug !== undefined) && room.relayNetwork ? [
-        el('button', { class: 'ghost', onclick: setBots(Math.min(3, room.bots + 1), room.botMirror) }, '加人机'),
+        el('button', { class: 'ghost', onclick: setBots(Math.min(9, room.bots + 1), room.botMirror) }, '加人机'),
+        el('button', { class: 'ghost', onclick: (e) => act(e.target, async () => {
+          await api('POST', `/rooms/${room.id}/bots`, { fill: true, mirror: room.botMirror }); await loadRooms();
+          toast('已加满。房主手机会在 10 秒内照做');
+        }) }, '加满人机'),
         el('button', { class: 'ghost', onclick: setBots(Math.max(0, room.bots - 1), room.botMirror) }, '减人机'),
         el('button', { class: 'ghost', onclick: setBots(room.botMirror ? room.bots : Math.max(1, room.bots), !room.botMirror) }, room.botMirror ? '关镜像' : '开镜像（实验）'),
       ] : [];
@@ -139,7 +164,8 @@
         el('div', { class: 'grow' }, title, el('div', { class: 'sub' }, `房主 ${room.hostName} · ${room.players} / ${room.maxPlayers} 人`),
           ...(room.relayReached === false ? [el('div', { class: 'sub' }, `中转：服务器还没有收到房主手机的 UDP 数据，别人和人机都进不来。服务器累计收到 UDP 包 ${(info.relayStats || {}).received ?? '?'} 个，其中令牌不认识的 ${(info.relayStats || {}).unknown ?? '?'} 个。收到 0 个 = 包没到服务器（防火墙/安全组没放行 UDP ${info.relayPort || 27950}、域名套了 CDN、或手机网络拦 UDP）；有“不认识的” = 服务器重启过，手机上重开游戏再建房。`)] : []),
           ...(room.relayReached === true ? [el('div', { class: 'sub' }, '中转：UDP 通畅')] : []),
-          ...(room.debug ? [el('div', { class: 'sub' }, `诊断：${room.debug}`)] : [])),
+          ...(room.debug ? [el('div', { class: 'sub' }, `诊断：${room.debug}`)] : []),
+          ...(room.match ? [matchBox(room)] : [])),
         el('div', { class: 'join' },
           el('div', {}, el('small', {}, '房主 IP'), el('b', {}, room.hostAddress)),
           el('div', {}, el('small', {}, '房间码'), el('b', {}, room.roomCode))),
@@ -203,7 +229,7 @@
     const { matches } = await api('GET', '/matches');
     const list = $('matches');
     list.replaceChildren();
-    if (!matches.length) return list.append(empty('还没有枪战记录。房主在游戏里办完一场枪战后，战绩会出现在这里。'));
+    if (!matches.length) return list.append(empty('还没有团队竞技记录。房主在游戏里办完一场团队竞技后，战绩会出现在这里。'));
     const REASONS = { target: '达到目标击杀数', time: '时间到', host: '房主提前结束' };
     for (const match of matches) {
       const results = el('ol', { class: 'results' });

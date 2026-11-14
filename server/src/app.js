@@ -311,13 +311,14 @@ function createApp(config, db, relay = createRelay(config)) {
   const freshSince = () => now() - config.roomTimeoutSeconds;
   // Test bots asked for and the host's last diagnostic line, per room. Not worth a schema change: both are
   // only meaningful while the room is live, and the host re-reads them on every heartbeat.
-  const MAX_BOTS = 3;
+  const MAX_BOTS = 9;
   const extras = new Map();
   const extra = (id) => extras.get(Number(id)) || { bots: 0, mirror: false, debug: '' };
   const roomFor = (row, viewer) => {
     const more = extra(row.id);
     const room = { ...publicRoom(row), bots: more.bots, botMirror: more.mirror };
     if (viewer.is_admin || Number(row.user_id) === Number(viewer.id)) {
+      if (room.relayNetwork) room.match = publicMatch(matches.get(room.relayNetwork));
       room.debug = more.debug;
       // Rooms are listed over HTTPS; the game itself needs the UDP port. Say whether that part works.
       if (room.relayNetwork) room.relayReached = relay.reached(Number(row.user_id));
@@ -378,7 +379,11 @@ function createApp(config, db, relay = createRelay(config)) {
     if (!row) throw new ApiError(404, 'not_found', '房间不存在或已过期');
     if (!req.user.is_admin && Number(row.user_id) !== Number(req.user.id)) throw new ApiError(403, 'forbidden', '只有房主或管理员可以设置人机');
     if (row.host_address !== HOST_IP) throw bad('只有用“公网联机”创建的房间可以加人机', 'not_relayed');
-    extras.set(id, { ...extra(id), bots: whole(req.body.count, '人机数量', 0, MAX_BOTS), mirror: !!req.body.mirror });
+    // "fill" asks for as many bots as there are free seats.
+    const count = req.body.fill
+      ? Math.max(0, Math.min(MAX_BOTS, Number(row.max_players) - Math.max(1, relay.realCount(Number(row.user_id)))))
+      : whole(req.body.count, '人机数量', 0, MAX_BOTS);
+    extras.set(id, { ...extra(id), bots: count, mirror: !!req.body.mirror });
     res.json({ room: roomFor(row, req.user) });
   }));
 
@@ -468,14 +473,19 @@ function createApp(config, db, relay = createRelay(config)) {
     res.json({ characters: await withDeathmatch(rows.map(publicStats)) });
   }));
 
-  // ---- team deathmatch ------------------------------------------------------
+  // ---- team deathmatch ("团队竞技") ---------------------------------------------
   // One match per relay network, kept in memory while it is being played and written to the database
   // when it ends. The host owns it; every phone reports its own player's deaths, and a death is a
   // point for the other team. Like race results this is client-reported and not tamper-proof.
+  // Test bots take part too: they fill the smaller team, and a bot goes down when players on the
+  // other team have damaged it often enough.
   const TEAMS = ['red', 'blue'];
   const TEAM_SIZE = 5;
+  const HIT_SECONDS = 15, LATE_HIT_SECONDS = 4, RESPAWN_SECONDS = 3;
   const matches = new Map();   // network id -> match
   const other = (team) => (team === 'red' ? 'blue' : 'red');
+  const teamOf = (current, team) => [...current.players.values()].filter((p) => p.team === team);
+  const newPlayer = (fields) => ({ userId: 0, bot: 0, characterId: null, team: '', kills: 0, deaths: 0, diedAt: 0, slot: 0, hit: null, death: null, hits: 0, ...fields });
 
   function matchContext(req) {
     const networkId = whole(req.body.networkId, '中转网络', 1, Number.MAX_SAFE_INTEGER);
@@ -483,8 +493,8 @@ function createApp(config, db, relay = createRelay(config)) {
     if (!role) throw new ApiError(403, 'not_in_room', '你不在这个公网联机房间里');
     return { networkId, host: role === 'host', match: matches.get(networkId) || null };
   }
-  const hostOnly = (context) => { if (!context.host) throw new ApiError(403, 'not_host', '只有房主可以操作枪战'); };
-  const needMatch = (context) => { if (!context.match) throw new ApiError(404, 'no_match', '房主还没有创建枪战'); return context.match; };
+  const hostOnly = (context) => { if (!context.host) throw new ApiError(403, 'not_host', '只有房主可以操作团队竞技'); };
+  const needMatch = (context) => { if (!context.match) throw new ApiError(404, 'no_match', '房主还没有创建团队竞技'); return context.match; };
 
   async function finishMatch(match, reason) {
     if (match.state !== 'running') return;
@@ -492,8 +502,8 @@ function createApp(config, db, relay = createRelay(config)) {
     match.reason = reason;
     match.endedAt = now();
     match.winner = match.score.red === match.score.blue ? 'draw' : (match.score.red > match.score.blue ? 'red' : 'blue');
-    const players = [...match.players.values()];
-    if (!players.length) return;
+    const players = [...match.players.values()].filter((p) => p.team);
+    if (!players.length || !match.record) return;
     await db.tx(async (tx) => {
       const saved = await tx.run('INSERT INTO dm_matches (host_user_id, host_name, target, minutes, red_score, blue_score, winner, reason, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [match.hostId, match.hostName, match.target, match.minutes, match.score.red, match.score.blue, match.winner, reason, match.startedAt, match.endedAt]);
@@ -511,41 +521,102 @@ function createApp(config, db, relay = createRelay(config)) {
     if (match.state !== 'running' && now() - (match.endedAt || match.createdAt) > 3600) { matches.delete(networkId); return null; }
     return match;
   }
-  const publicMatch = (match) => match && ({ state: match.state, target: match.target, minutes: match.minutes, hostName: match.hostName,
-    red: match.score.red, blue: match.score.blue, winner: match.winner || '', reason: match.reason || '',
-    startedAt: match.startedAt || 0, endsAt: match.endsAt || 0, endedAt: match.endedAt || 0, now: now(),
-    players: [...match.players.values()].map((p) => ({ userId: p.userId, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths })),
-    feed: match.feed.slice(-5).map((f) => ({ at: f.at, victim: f.victim, killer: f.killer, team: f.team })) });
-  const HIT_SECONDS = 15, LATE_HIT_SECONDS = 4;
-  const credit = (current, victim, killer) => {
-    if (!killer || killer.team === victim.team || victim.death.killer) return;
+  function publicMatch(match) {
+    if (!match) return null;
+    return { state: match.state, target: match.target, minutes: match.minutes, botHits: match.botHits, record: match.record, hostName: match.hostName,
+      red: match.score.red, blue: match.score.blue, winner: match.winner || '', reason: match.reason || '',
+      startedAt: match.startedAt || 0, endsAt: match.endsAt || 0, endedAt: match.endedAt || 0, now: now(),
+      players: [...match.players.entries()].filter(([, p]) => p.team).map(([id, p]) => ({ id: String(id), userId: p.userId, bot: !!p.bot, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths })),
+      feed: match.feed.slice(-5).map((f) => ({ at: f.at, victim: f.victim, killer: f.killer, team: f.team })) };
+  }
+
+  const credit = (victim, killer) => {
+    if (!killer || killer === victim || killer.team === victim.team || victim.death.killer) return;
     killer.kills++;
     victim.death.killer = killer.name;
   };
+  /** One death: a point for the other team, and a kill for whoever did it (given, or the last to damage the victim). */
+  async function kill(current, victim, killer) {
+    const scorer = other(victim.team);
+    victim.diedAt = now();
+    victim.deaths++;
+    victim.hits = 0;
+    current.score[scorer]++;
+    victim.death = { at: now(), victim: victim.name, killer: '', team: scorer };
+    current.feed.push(victim.death);
+    if (current.feed.length > 20) current.feed.shift();
+    if (killer) credit(victim, killer);
+    else if (victim.hit && now() - victim.hit.at <= HIT_SECONDS) credit(victim, current.players.get(victim.hit.by));
+    victim.hit = null;
+    if (current.score[scorer] >= current.target) await finishMatch(current, 'target');
+  }
+
+  /** Bots take the seats that are left, smaller team first, so real players always get the team they pick. */
+  function balanceBots(current) {
+    const size = { red: 0, blue: 0 };
+    for (const p of current.players.values()) if (!p.bot && p.team) size[p.team]++;
+    const bots = [...current.players.values()].filter((p) => p.bot).sort((a, b) => a.bot - b.bot);
+    for (const bot of bots) {
+      const first = size.red <= size.blue ? 'red' : 'blue';
+      bot.team = size[first] < TEAM_SIZE ? first : (size[other(first)] < TEAM_SIZE ? other(first) : '');
+      if (bot.team) size[bot.team]++;
+    }
+  }
+  /** The host's phone says which bots are in the room and their member numbers. */
+  function syncBots(current, list) {
+    if (!current || current.state === 'finished') return;
+    const seen = new Map();
+    for (const entry of list.slice(0, MAX_BOTS)) {
+      if (!entry || !Number.isInteger(entry.index) || entry.index < 1 || entry.index > MAX_BOTS) continue;
+      seen.set(entry.index, Number.isInteger(entry.slot) && entry.slot >= 1 && entry.slot <= 10 ? entry.slot : 0);
+    }
+    if (current.state === 'running') {
+      for (const p of current.players.values()) if (p.bot && seen.has(p.bot)) p.slot = seen.get(p.bot);
+      return;
+    }
+    for (const [id, p] of current.players) if (p.bot && !seen.has(p.bot)) current.players.delete(id);
+    for (const [index, slot] of seen) {
+      const id = `bot:${index}`;
+      if (!current.players.has(id)) current.players.set(id, newPlayer({ bot: index, name: `人机${index}` }));
+      current.players.get(id).slot = slot;
+    }
+    balanceBots(current);
+  }
+
   /**
    * Every request from a phone carries its member number and the member numbers its player has just
    * damaged (the game keeps that table for its own damage sync). The last one to damage a player who
-   * then dies gets the kill, also when that report arrives a moment after the death.
+   * then dies gets the kill, also when that report arrives a moment after the death. A bot on the
+   * other team goes down once it has been damaged "botHits" times.
    */
-  function noteClient(req, current) {
+  async function noteClient(req, current) {
     if (!current || current.state !== 'running') return;
     const player = current.players.get(Number(req.user.id));
-    if (!player) return;
+    if (!player || !player.team) return;
     if (Number.isInteger(req.body.slot) && req.body.slot >= 1 && req.body.slot <= 10) player.slot = req.body.slot;
     if (!Array.isArray(req.body.hits)) return;
-    for (const slot of req.body.hits.slice(0, 10)) {
-      const victim = [...current.players.values()].find((p) => p.slot === slot && p !== player);
+    const counts = Array.isArray(req.body.counts) ? req.body.counts : [];
+    const hits = req.body.hits.slice(0, 10);
+    for (let i = 0; i < hits.length && current.state === 'running'; i++) {
+      const victim = [...current.players.values()].find((p) => p.team && p.slot === hits[i] && p !== player);
       if (!victim) continue;
-      // Damage reported just after the victim's death belongs to that death, not to the next life.
-      if (victim.death && now() - victim.death.at <= LATE_HIT_SECONDS) credit(current, victim, player);
-      else victim.hit = { by: player.userId, at: now() };
+      if (victim.bot) {
+        if (victim.team === player.team || now() - victim.diedAt < RESPAWN_SECONDS) continue;
+        victim.hits += Number.isInteger(counts[i]) && counts[i] > 0 ? Math.min(counts[i], 50) : 1;
+        if (victim.hits >= current.botHits) await kill(current, victim, player);
+      } else if (victim.death && now() - victim.death.at <= LATE_HIT_SECONDS) {
+        credit(victim, player);     // damage reported just after the death belongs to that death
+      } else {
+        victim.hit = { by: player.userId, at: now() };
+      }
     }
   }
 
   const match = (handler) => authed(async (req, res) => {
     const context = matchContext(req);
     context.match = await settle(context.networkId);
-    noteClient(req, context.match);
+    if (context.host && Array.isArray(req.body.bots)) syncBots(context.match, req.body.bots);
+    await noteClient(req, context.match);
     await handler(req, context);
     res.json({ host: context.host, userId: Number(req.user.id), match: publicMatch(await settle(context.networkId)) });
   });
@@ -555,17 +626,20 @@ function createApp(config, db, relay = createRelay(config)) {
   // Creating replaces a match that is not being played.
   api.post('/match/create', match(async (req, context) => {
     hostOnly(context);
-    if (context.match && context.match.state === 'running') throw new ApiError(409, 'running', '枪战正在进行，请先结束');
+    if (context.match && context.match.state === 'running') throw new ApiError(409, 'running', '团队竞技正在进行，请先结束');
     const character = req.user.active_character_id == null ? null : await db.get('SELECT name FROM characters WHERE id = ?', [req.user.active_character_id]);
-    matches.set(context.networkId, { state: 'lobby', hostId: Number(req.user.id), hostName: character ? character.name : req.user.username,
+    const created = { state: 'lobby', hostId: Number(req.user.id), hostName: character ? character.name : req.user.username,
       target: whole(req.body.target ?? 20, '目标击杀数', 1, 200), minutes: whole(req.body.minutes ?? 15, '时间上限', 1, 60),
-      score: { red: 0, blue: 0 }, players: new Map(), feed: [], debug: [], createdAt: now() });
+      botHits: whole(req.body.botHits ?? 3, '击倒人机所需命中数', 1, 50), record: req.body.record !== false,
+      score: { red: 0, blue: 0 }, players: new Map(), feed: [], debug: [], createdAt: now() };
+    matches.set(context.networkId, created);
+    if (Array.isArray(req.body.bots)) syncBots(created, req.body.bots);
   }));
 
   // Choosing a team (or leaving with team = null). The host may place anyone who is in the room.
   api.post('/match/team', match(async (req, context) => {
     const current = needMatch(context);
-    if (current.state !== 'lobby') throw new ApiError(409, 'not_lobby', current.state === 'running' ? '枪战已经开始，不能换队' : '这场枪战已经结束');
+    if (current.state !== 'lobby') throw new ApiError(409, 'not_lobby', current.state === 'running' ? '团队竞技已经开始，不能换队' : '这场团队竞技已经结束');
     let userId = Number(req.user.id);
     if (req.body.userId !== undefined && Number(req.body.userId) !== userId) {
       hostOnly(context);
@@ -573,22 +647,22 @@ function createApp(config, db, relay = createRelay(config)) {
       if (!relay.roleIn(context.networkId, userId)) throw new ApiError(404, 'not_in_room', '这名玩家不在房间里');
     }
     const team = req.body.team;
-    if (team == null) { current.players.delete(userId); return; }
+    if (team == null) { current.players.delete(userId); balanceBots(current); return; }
     if (!TEAMS.includes(team)) throw bad('队伍需为 red 或 blue');
-    const mates = [...current.players.values()].filter((p) => p.team === team && p.userId !== userId);
+    const mates = teamOf(current, team).filter((p) => !p.bot && p.userId !== userId);
     if (mates.length >= TEAM_SIZE) throw new ApiError(409, 'team_full', `${team === 'red' ? '红' : '蓝'}队已满 ${TEAM_SIZE} 人`);
     const owner = await db.get('SELECT u.username, c.id AS character_id, c.name FROM users u LEFT JOIN characters c ON c.id = u.active_character_id WHERE u.id = ?', [userId]);
     if (!owner) throw new ApiError(404, 'not_found', '玩家不存在');
-    current.players.set(userId, { userId, characterId: owner.character_id == null ? null : Number(owner.character_id),
-      name: owner.name || owner.username, team, kills: 0, deaths: 0, diedAt: 0, slot: 0, hit: null, death: null });
+    current.players.set(userId, newPlayer({ userId, characterId: owner.character_id == null ? null : Number(owner.character_id),
+      name: owner.name || owner.username, team }));
+    balanceBots(current);
   }));
 
   api.post('/match/start', match(async (_req, context) => {
     hostOnly(context);
     const current = needMatch(context);
-    if (current.state !== 'lobby') throw new ApiError(409, 'not_lobby', '这场枪战已经开始或结束，请重新创建');
-    const sizes = TEAMS.map((team) => [...current.players.values()].filter((p) => p.team === team).length);
-    if (sizes[0] < 1 || sizes[1] < 1) throw bad('两队都至少要有 1 人才能开始', 'teams_empty');
+    if (current.state !== 'lobby') throw new ApiError(409, 'not_lobby', '这场团队竞技已经开始或结束，请重新创建');
+    if (!teamOf(current, 'red').length || !teamOf(current, 'blue').length) throw bad('两队都至少要有 1 人（或人机）才能开始', 'teams_empty');
     Object.assign(current, { state: 'running', startedAt: now(), endsAt: now() + current.minutes * 60 });
   }));
 
@@ -605,21 +679,27 @@ function createApp(config, db, relay = createRelay(config)) {
     const current = context.match;
     if (!current || current.state !== 'running') return;
     const player = current.players.get(Number(req.user.id));
-    if (!player || now() - player.diedAt < 3) return;      // one death per respawn
-    player.diedAt = now();
-    player.deaths++;
-    const scorer = other(player.team);
-    current.score[scorer]++;
-    player.death = { at: now(), victim: player.name, killer: '', team: scorer };
-    current.feed.push(player.death);
-    if (current.feed.length > 20) current.feed.shift();
-    if (player.hit && now() - player.hit.at <= HIT_SECONDS) credit(current, player, current.players.get(player.hit.by));
-    player.hit = null;
+    if (!player || !player.team || now() - player.diedAt < RESPAWN_SECONDS) return;      // one death per respawn
     if (typeof req.body.debug === 'string') {
       current.debug.push({ at: now(), name: player.name, text: req.body.debug.slice(0, 2000) });
       if (current.debug.length > 30) current.debug.shift();
     }
-    if (current.score[scorer] >= current.target) await finishMatch(current, 'target');
+    await kill(current, player, null);
+  }));
+
+  // For testing from the web page: the host or an administrator makes a player or bot go down once.
+  api.post('/match/simulate', authed(async (req, res) => {
+    const networkId = whole(req.body.networkId, '中转网络', 1, Number.MAX_SAFE_INTEGER);
+    if (!req.user.is_admin && relay.roleIn(networkId, Number(req.user.id)) !== 'host') throw new ApiError(403, 'forbidden', '只有房主或管理员可以模拟阵亡');
+    const current = await settle(networkId);
+    if (!current || current.state !== 'running') throw new ApiError(409, 'not_running', '团队竞技没有在进行');
+    const find = (id) => current.players.get(/^\d+$/.test(String(id)) ? Number(id) : String(id));
+    const victim = find(req.body.victim);
+    if (!victim || !victim.team) throw new ApiError(404, 'not_found', '这名队员不在比赛里');
+    const killer = req.body.killer == null ? null : find(req.body.killer);
+    victim.hit = null;
+    await kill(current, victim, killer && killer.team ? killer : null);
+    res.json({ match: publicMatch(current) });
   }));
 
   api.get('/matches', authed(async (_req, res) => {
