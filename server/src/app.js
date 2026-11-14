@@ -536,8 +536,9 @@ function createApp(config, db, relay = createRelay(config)) {
     for (const slot of req.body.hits.slice(0, 10)) {
       const victim = [...current.players.values()].find((p) => p.slot === slot && p !== player);
       if (!victim) continue;
-      victim.hit = { by: player.userId, at: now() };
+      // Damage reported just after the victim's death belongs to that death, not to the next life.
       if (victim.death && now() - victim.death.at <= LATE_HIT_SECONDS) credit(current, victim, player);
+      else victim.hit = { by: player.userId, at: now() };
     }
   }
 
