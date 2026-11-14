@@ -40,6 +40,16 @@ PATCHES = [
     ('smali/com/gtavsource/android/GameMenuActivity.smali',
      '    invoke-static {v0}, Lcom/gtavsource/android/LanPages;->defaults([I)[I\n',
      '    invoke-static {v0}, Lcom/gtavsource/android/LanPages;->defaults([I)[I\n\n    move-result-object v0\n\n    invoke-static {v0}, Lcom/xhynv/online/OnlineUi;->pages([I)[I\n'),
+    # The launcher opens on the online group's first page; the menu inside a running game keeps its own.
+    ('smali/com/gtavsource/android/GameMenuActivity.smali',
+     '    const/4 v1, 0x4\n\n    const-string v2, "page"\n',
+     '    const/4 v1, 0x4\n\n'
+     '    invoke-virtual {p0}, Lcom/gtavsource/android/GameMenuActivity;->isLauncher()Z\n\n'
+     '    move-result v2\n\n'
+     '    if-eqz v2, :online_first_page\n\n'
+     '    const/16 v1, 0x16\n\n'
+     '    :online_first_page\n'
+     '    const-string v2, "page"\n'),
     # ... and so do their icons, which the launcher picks by position.
     ('smali_classes10/com/gtavsource/android/LiquidLauncher.smali',
      '    invoke-direct {v3, v13, v9}, Lcom/gtavsource/android/LiquidLauncher$Icon;-><init>(Lcom/gtavsource/android/LiquidLauncher$Root;I)V\n',
