@@ -515,10 +515,36 @@ function createApp(config, db, relay = createRelay(config)) {
     red: match.score.red, blue: match.score.blue, winner: match.winner || '', reason: match.reason || '',
     startedAt: match.startedAt || 0, endsAt: match.endsAt || 0, endedAt: match.endedAt || 0, now: now(),
     players: [...match.players.values()].map((p) => ({ userId: p.userId, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths })),
-    feed: match.feed.slice(-5) });
+    feed: match.feed.slice(-5).map((f) => ({ at: f.at, victim: f.victim, killer: f.killer, team: f.team })) });
+  const HIT_SECONDS = 15, LATE_HIT_SECONDS = 4;
+  const credit = (current, victim, killer) => {
+    if (!killer || killer.team === victim.team || victim.death.killer) return;
+    killer.kills++;
+    victim.death.killer = killer.name;
+  };
+  /**
+   * Every request from a phone carries its member number and the member numbers its player has just
+   * damaged (the game keeps that table for its own damage sync). The last one to damage a player who
+   * then dies gets the kill, also when that report arrives a moment after the death.
+   */
+  function noteClient(req, current) {
+    if (!current || current.state !== 'running') return;
+    const player = current.players.get(Number(req.user.id));
+    if (!player) return;
+    if (Number.isInteger(req.body.slot) && req.body.slot >= 1 && req.body.slot <= 10) player.slot = req.body.slot;
+    if (!Array.isArray(req.body.hits)) return;
+    for (const slot of req.body.hits.slice(0, 10)) {
+      const victim = [...current.players.values()].find((p) => p.slot === slot && p !== player);
+      if (!victim) continue;
+      victim.hit = { by: player.userId, at: now() };
+      if (victim.death && now() - victim.death.at <= LATE_HIT_SECONDS) credit(current, victim, player);
+    }
+  }
+
   const match = (handler) => authed(async (req, res) => {
     const context = matchContext(req);
     context.match = await settle(context.networkId);
+    noteClient(req, context.match);
     await handler(req, context);
     res.json({ host: context.host, userId: Number(req.user.id), match: publicMatch(await settle(context.networkId)) });
   });
@@ -553,7 +579,7 @@ function createApp(config, db, relay = createRelay(config)) {
     const owner = await db.get('SELECT u.username, c.id AS character_id, c.name FROM users u LEFT JOIN characters c ON c.id = u.active_character_id WHERE u.id = ?', [userId]);
     if (!owner) throw new ApiError(404, 'not_found', '玩家不存在');
     current.players.set(userId, { userId, characterId: owner.character_id == null ? null : Number(owner.character_id),
-      name: owner.name || owner.username, team, kills: 0, deaths: 0, diedAt: 0 });
+      name: owner.name || owner.username, team, kills: 0, deaths: 0, diedAt: 0, slot: 0, hit: null, death: null });
   }));
 
   api.post('/match/start', match(async (_req, context) => {
@@ -583,12 +609,11 @@ function createApp(config, db, relay = createRelay(config)) {
     player.deaths++;
     const scorer = other(player.team);
     current.score[scorer]++;
-    // The killer is only named when the reporting phone could tell, and only if on the other team.
-    const killer = typeof req.body.killerName === 'string'
-      ? [...current.players.values()].find((p) => p.team === scorer && key(p.name) === key(req.body.killerName)) : null;
-    if (killer) killer.kills++;
-    current.feed.push({ at: now(), victim: player.name, killer: killer ? killer.name : '', team: scorer });
+    player.death = { at: now(), victim: player.name, killer: '', team: scorer };
+    current.feed.push(player.death);
     if (current.feed.length > 20) current.feed.shift();
+    if (player.hit && now() - player.hit.at <= HIT_SECONDS) credit(current, player, current.players.get(player.hit.by));
+    player.hit = null;
     if (typeof req.body.debug === 'string') {
       current.debug.push({ at: now(), name: player.name, text: req.body.debug.slice(0, 2000) });
       if (current.debug.length > 30) current.debug.shift();

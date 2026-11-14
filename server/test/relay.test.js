@@ -242,13 +242,18 @@ test('team deathmatch: teams, deaths score for the other side, target ends it, r
   assert.equal((await call('POST', '/api/match/start', hostToken, body())).data.match.state, 'running');
   assert.equal((await call('POST', '/api/match/team', guestToken, body({ team: 'red' }))).status, 409, 'no switching mid-match');
 
-  let state = (await call('POST', '/api/match/death', guestToken, body({ killerName: 'dmhostC', debug: 'aa' }))).data.match;
+  await call('POST', '/api/match/state', guestToken, body({ slot: 2 }));
+  await call('POST', '/api/match/state', hostToken, body({ slot: 1, hits: [2] }));
+  let state = (await call('POST', '/api/match/death', guestToken, body({ slot: 2, debug: 'aa' }))).data.match;
   assert.deepEqual([state.red, state.blue], [1, 0]);
-  assert.equal(state.players.find((p) => p.name === 'dmhostC').kills, 1);
+  assert.equal(state.players.find((p) => p.name === 'dmhostC').kills, 1, 'the last one to damage the victim gets the kill');
+  assert.equal(state.feed[0].killer, 'dmhostC');
   state = (await call('POST', '/api/match/death', guestToken, body())).data.match;
   assert.deepEqual([state.red, state.blue], [1, 0], 'a second report right away is the same death');
   state = (await call('POST', '/api/match/death', hostToken, body())).data.match;
   assert.deepEqual([state.red, state.blue], [1, 1]);
+  state = (await call('POST', '/api/match/state', guestToken, body({ hits: [1] }))).data.match;
+  assert.equal(state.players.find((p) => p.name === 'dmguestC').kills, 1, 'a damage report that arrives just after the death still counts');
   await new Promise((resolve) => setTimeout(resolve, 3100));
   state = (await call('POST', '/api/match/death', hostToken, body())).data.match;
   assert.deepEqual([state.red, state.blue, state.state, state.winner, state.reason], [1, 2, 'finished', 'blue', 'target']);
@@ -259,6 +264,7 @@ test('team deathmatch: teams, deaths score for the other side, target ends it, r
   const guestRow = board.find((row) => row.name === 'dmguestC'), hostRow = board.find((row) => row.name === 'dmhostC');
   assert.deepEqual([guestRow.dmMatches, guestRow.dmWins, guestRow.dmDeaths], [1, 1, 1]);
   assert.deepEqual([hostRow.dmWins, hostRow.dmKills, hostRow.dmDeaths], [0, 1, 2]);
+  assert.equal(guestRow.dmKills, 1);
   assert.equal((await call('POST', '/api/match/create', hostToken, body({ target: 5 }))).data.match.state, 'lobby', 'a finished match can be replaced');
 });
 
