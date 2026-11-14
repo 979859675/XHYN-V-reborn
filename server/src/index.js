@@ -15,7 +15,7 @@ async function main() {
     console.log(`UDP relay listening on 0.0.0.0:${relay.port}`);
   }
   const server = createApp(config, db, relay).listen(config.port, config.host, () => {
-    console.log(`XHYN V Online listening on http://${config.host}:${config.port} (${config.dbDriver})`);
+    console.log(`星战GTA5Online listening on http://${config.host}:${config.port} (${config.dbDriver})`);
   });
   const stop = () => server.close(() => Promise.allSettled([relay.close(), db.close()]).finally(() => process.exit(0)));
   process.on('SIGINT', stop);
