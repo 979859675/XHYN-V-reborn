@@ -5,10 +5,11 @@
 Starts from the same base APK as ../zh-CN/build_zh.py, applies the same translation, then:
   * compiles java/ into a new classes12.dex,
   * adds a few calls into the game's LAN code (see PATCHES below),
-  * sets the launcher name (APP_NAME) and the application id (PACKAGE).
+  * sets the launcher name (APP_NAME) and the application id (PACKAGE),
+  * turns the game text back to Simplified Chinese (chinese_engine).
 Nothing else in the APK changes. The base may be the original release or this repository's zh-CN release.
 """
-import argparse, json, re, shutil, sys, zipfile
+import argparse, hashlib, json, re, shutil, struct, sys, zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -93,6 +94,46 @@ PATCHES = [
      '    invoke-static {v0, v1, v2, v3}, Lcom/xhynv/online/OnlineUi;->attach(Landroid/widget/LinearLayout;Landroid/widget/EditText;Landroid/widget/EditText;Landroid/widget/EditText;)V\n\n'
      '    invoke-direct {v0}, Lcom/gtavsource/android/LanPage;->refresh()V\n\n    return-void\n'),
 ]
+
+
+ENGINE = 'lib/arm64-v8a/libgtav.so'
+ENGINE_SHA = '373bfb2f359ec68154f1099cbdaac363adf649a8ca30d1962868e1bd1cb9b3c1'
+# The base's engine was switched to English by modifications/english-1.7.4/patch_native_english.py.
+# These are that script's edits, the other way round: (address, bytes now, bytes of the Chinese original).
+ENGINE_WORDS = [
+    (0x23204d0, '00008052', '20008052'),  # Asian text formatting
+    (0x23204d8, '20008052', 'a0018052'),  # language 13, Simplified Chinese
+    (0x23204ec, '20008052', 'a0018052'),
+    (0x2320524, '1f040071', '1f340071'),  # the language the engine accepts
+]
+# (address, register, where the English name sits, where the original name sits, original name)
+ENGINE_NAMES = [(0x232069c, 0, 0xfceda4, 0x65cbfb, b'chinese'), (0x23206b4, 0, 0xfceda4, 0x660c40, b'chinesesimp')] + [
+    (address, 3, 0xfcedc4, 0x660c40, b'chinesesimp') for address in (0x2321dcc, 0x2321e2c, 0x2321e4c, 0x2323358, 0x2323398, 0x23233d8)]
+ENGINE_TEXT = 0x4000  # address minus file offset inside .text; .rodata addresses are file offsets
+
+
+def engine_pair(pc, target, register):
+    """The adrp + add pair loading `target` into `register` at `pc`."""
+    page = (((target & ~4095) - (pc & ~4095)) >> 12) & 0x1fffff
+    return struct.pack('<II', 0x90000000 | ((page & 3) << 29) | ((page >> 2) << 5) | register,
+                       0x91000000 | ((target & 4095) << 10) | (register << 5) | register)
+
+
+def chinese_engine(data):
+    """Give the game its own Simplified Chinese text back. Every site is checked before it is touched."""
+    assert hashlib.sha256(data).hexdigest() == ENGINE_SHA, 'the language edits only fit the exact engine of the base'
+    out = bytearray(data)
+    for address, now, original in ENGINE_WORDS:
+        at = address - ENGINE_TEXT
+        assert out[at:at + 4] == bytes.fromhex(now), 'engine differs at %#x' % address
+        out[at:at + 4] = bytes.fromhex(original)
+    for address, register, english, original, name in ENGINE_NAMES:
+        at = address - ENGINE_TEXT
+        assert out[at:at + 8] == engine_pair(address, english, register), 'engine differs at %#x' % address
+        assert data[original:original + len(name) + 1] == name + b'\0', 'name missing at %#x' % original
+        out[at:at + 8] = engine_pair(address, original, register)
+    assert len(out) == len(data) and sum(x != y for x, y in zip(out, data)) <= 4 * len(ENGINE_WORDS) + 8 * len(ENGINE_NAMES)
+    return bytes(out)
 
 
 def main():
@@ -190,6 +231,7 @@ def main():
     assert utf16(APP_NAME) in binary and utf16(PACKAGE + '\0') in binary and utf16(PACKAGE + '.modspawn') in binary and utf16(OLD_PACKAGE) not in binary, 'manifest names not as expected'
     assert abs(len(binary) - len(before) - grew) < 8, 'manifest changed by more than the names (%d bytes, expected %d)' % (len(binary) - len(before), grew)
     replace['AndroidManifest.xml'] = binary
+    replace[ENGINE] = chinese_engine(zipfile.ZipFile(base).read(ENGINE))
     for folder in sorted(changed):
         name = 'classes.dex' if folder == 'smali' else folder.replace('smali_', '') + '.dex'
         replace[name] = built.read(name)
