@@ -244,7 +244,9 @@ public final class Online {
                         long now = System.currentTimeMillis();
                         // Keep the host's relay network alive so "create room" works at once, and so a
                         // server restart during a game is picked up by the open socket.
-                        if (now - relayCheckedAt >= 120_000 || relayCheckedAt == 0) {
+                        Relay.Session hosted = Relay.hostSession;
+                        boolean lost = hosted != null && hosted.rejected && now - relayCheckedAt >= 10_000;
+                        if (now - relayCheckedAt >= 120_000 || relayCheckedAt == 0 || lost) {
                             relayCheckedAt = now;
                             String token = token();
                             if (relayEnabled() && !token.isEmpty() && !characterName().isEmpty()) refreshHostRelay(token);
@@ -317,6 +319,15 @@ public final class Online {
         try { OnlineBridge.setMirror(mirror); } catch (Throwable ignored) { }
     }
 
+    private static String relayNote() {
+        try {
+            String note = Relay.diagnostics();
+            return note.isEmpty() ? "" : " | " + note;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     private static RoomSync.Snapshot snapshot() {
         RoomSync.Snapshot s = new RoomSync.Snapshot();
         LanSession.State state = LanSession.state();
@@ -330,7 +341,7 @@ public final class Online {
             s.virtualLan = !relayed && state.virtualNetwork;
             s.address = relayed ? Relay.HOST_IP : address(state.virtualNetwork);
             try {
-                s.debug = OnlineBridge.diagnostics() + (botError.isEmpty() ? "" : " | " + botError);
+                s.debug = OnlineBridge.diagnostics() + relayNote() + (botError.isEmpty() ? "" : " | " + botError);
             } catch (Throwable ignored) {
             }
             try {

@@ -21,6 +21,10 @@ const PREFIX = '10.77.0.';
 const BROADCASTS = new Set(['255.255.255.255', '10.77.0.255']);
 const UP_HEADER = 20, DOWN_HEADER = 10, MAX_PAYLOAD = 1400, MAX_PORTS = 4;
 
+// Replies to the phone. Same header as a forwarded packet, with a type the game socket never delivers.
+const ACK = Buffer.from([0x58, 0x52, 1, 1, 0, 0, 0, 0, 0, 0]);
+const REJECT = Buffer.from([0x58, 0x52, 1, 2, 0, 0, 0, 0, 0, 0]);
+
 function createRelay(config) {
   const idleMs = (config.relayIdleSeconds || 600) * 1000;
   const maxMembers = config.relayMaxMembers || 10;
@@ -28,7 +32,7 @@ function createRelay(config) {
   const networks = new Map();   // id -> network
   const byOwner = new Map();    // user id -> network
   const byToken = new Map();    // hex token -> member
-  const stats = { received: 0, forwarded: 0, dropped: 0 };
+  const stats = { received: 0, forwarded: 0, dropped: 0, unknown: 0 };
   let socket = null, timer = null, nextId = 1, port = 0;
 
   const now = () => Date.now();
@@ -128,7 +132,12 @@ function createRelay(config) {
     if (message.length < UP_HEADER || message.length > UP_HEADER + MAX_PAYLOAD
       || message[0] !== 0x58 || message[1] !== 0x52 || message[2] !== 1) { stats.dropped++; return; }
     const member = byToken.get(message.toString('hex', 4, 12));
-    if (!member) { stats.dropped++; return; }
+    if (!member) {
+      // Tell the phone its seat is gone (the server was restarted, or the network expired) so it asks for a new one.
+      stats.dropped++; stats.unknown++;
+      socket.send(REJECT, remote.port, remote.address);
+      return;
+    }
     const time = now();
     const srcPort = message.readUInt16BE(12);
     let endpoint = member.endpoints.get(srcPort);
@@ -146,7 +155,10 @@ function createRelay(config) {
     endpoint.port = remote.port;
     endpoint.seenAt = time;
     member.network.activeAt = time;
-    if (message[3] !== 0) return;        // keep-alive
+    if (message[3] !== 0) {              // keep-alive: answered, so the phone knows the relay hears it
+      socket.send(ACK, remote.port, remote.address);
+      return;
+    }
 
     member.allowance = Math.min(bytesPerSecond, member.allowance + (time - member.refilledAt) * bytesPerSecond / 1000);
     member.refilledAt = time;

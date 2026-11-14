@@ -31,8 +31,8 @@ async function endpoint(session, port) {
   const socket = dgram.createSocket('udp4');
   sockets.push(socket);
   await new Promise((resolve) => socket.bind(0, '127.0.0.1', resolve));
-  const inbox = [];
-  socket.on('message', (message) => inbox.push({
+  const inbox = [], control = [];
+  socket.on('message', (message) => message[3] !== 0 ? control.push(message[3]) : inbox.push({
     from: `${message[4]}.${message[5]}.${message[6]}.${message[7]}:${message.readUInt16BE(8)}`, payload: message.subarray(10).toString(), magic: message.toString('latin1', 0, 2) }));
   const frame = (type, dstIp, dstPort, payload, token = session.token) => {
     const head = Buffer.alloc(20);
@@ -44,7 +44,7 @@ async function endpoint(session, port) {
     return Buffer.concat([head, Buffer.from(payload)]);
   };
   const raw = (buffer) => new Promise((resolve) => socket.send(buffer, relayPort, '127.0.0.1', resolve));
-  return { inbox, raw, frame,
+  return { inbox, control, raw, frame,
     keepAlive: () => raw(frame(1, '0.0.0.0', 0, '')),
     send: (dstIp, dstPort, payload) => raw(frame(0, dstIp, dstPort, payload)) };
 }
@@ -117,6 +117,8 @@ test('forged, malformed and oversized datagrams are ignored', async () => {
   await guest.raw(guest.frame(0, '10.77.0.1', 27945, 'x'.repeat(1401)));
   await settle();
   assert.equal(host.inbox.length, 0);
+  assert.deepEqual(host.control, [1], 'a keep-alive is acknowledged');
+  assert.deepEqual(guest.control, [2], 'an unknown seat is told so, once per datagram');
   await guest.send('10.77.0.1', 27945, 'x'.repeat(1400));
   await settle();
   assert.equal(host.inbox.length, 1, 'a full-size game packet still passes');

@@ -119,7 +119,7 @@ function createApp(config, db, relay = createRelay(config)) {
   // ---- accounts -------------------------------------------------------------
   api.get('/info', route(async (_req, res) => {
     res.json({ name: 'XHYN V Online', version: '0.2.0', inviteRequired: !!config.inviteCode, maxCharacters: config.maxCharacters,
-      relayPort: relay.port });
+      relayPort: relay.port, relayStats: { ...relay.stats, networks: relay.networks } });
   }));
 
   api.post('/auth/register', authLimit, route(async (req, res) => {
@@ -367,7 +367,7 @@ function createApp(config, db, relay = createRelay(config)) {
     const result = await db.run(`UPDATE rooms SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`, [...params, Number(req.params.id) || 0, req.user.id]);
     if (!result.changes) throw new ApiError(404, 'not_found', '房间不存在或已过期，请重新创建');
     const more = extra(req.params.id);
-    if (typeof req.body.debug === 'string') extras.set(Number(req.params.id), { ...more, debug: req.body.debug.slice(0, 400) });
+    if (typeof req.body.debug === 'string') extras.set(Number(req.params.id), { ...more, debug: req.body.debug.slice(0, 700) });
     res.json({ ok: true, bots: more.bots, botMirror: more.mirror });
   }));
 

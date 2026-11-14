@@ -22,6 +22,10 @@ public final class Relay {
         volatile InetAddress server;
         volatile int port;
         volatile long confirmedAt;
+        /** Set by the socket when the relay says it does not know this seat, e.g. after a server restart. */
+        volatile boolean rejected;
+        /** The last game socket opened on this session. */
+        volatile RelaySocket socket;
 
         boolean fresh(long now) { return now - confirmedAt < FRESH_MS; }
     }
@@ -35,6 +39,18 @@ public final class Relay {
     static final ThreadLocal<Session> NEXT = new ThreadLocal<Session>();
 
     private Relay() {}
+
+    /** One part of the diagnostics line: whether the host's packets get to the relay and back. */
+    static String diagnostics() {
+        Session session = hostSession;
+        if (session == null || active != session) return "";
+        RelaySocket socket = session.socket;
+        if (socket == null) return "中转:还没有打开游戏端口";
+        String address = session.server == null ? "?" : session.server.getHostAddress();
+        return "中转 " + address + ":" + session.port + " 发" + socket.sent + " 应答" + socket.acked
+                + " 收" + socket.delivered + (socket.rejected > 0 ? " 被拒" + socket.rejected : "")
+                + (socket.isClosed() ? " 端口已关" : "") + (socket.error.isEmpty() ? "" : " 错误:" + socket.error);
+    }
 
     /** Called by the game in place of {@code new DatagramSocket(address)}. */
     public static DatagramSocket socket(SocketAddress address) throws SocketException {
@@ -79,6 +95,7 @@ public final class Relay {
         session.token = bytes;
         session.networkId = Json.number(relay, "networkId");
         session.confirmedAt = now;
+        session.rejected = false;
         return session;
     }
 }
