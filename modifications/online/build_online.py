@@ -5,7 +5,7 @@
 Starts from the same base APK as ../zh-CN/build_zh.py, applies the same translation, then:
   * compiles java/ into a new classes12.dex,
   * adds a few calls into the game's LAN code (see PATCHES below),
-  * sets the launcher name (APP_NAME).
+  * sets the launcher name (APP_NAME) and the application id (PACKAGE).
 Nothing else in the APK changes. The base may be the original release or this repository's zh-CN release.
 """
 import argparse, json, re, shutil, sys, zipfile
@@ -16,8 +16,11 @@ sys.path.insert(0, str(HERE.parent / 'zh-CN'))
 import build_zh  # noqa: E402
 
 NEW_DEX = 'classes12.dex'
-APP_NAME = '小春GTA5Online'
+APP_NAME = '星战GTA5Online'
 OLD_NAME = 'XHYN V'
+# The application id. The resource table keeps the old name, which the game's own AppResources already allows for.
+PACKAGE = 'cn.xzcqgzs.zy'
+OLD_PACKAGE = 'com.xhynph.xhynv.reborn174'
 # The released zh-CN build: the original APK with only the translation applied.
 ZH_SHA256 = '8817ffed1f2e8a41fb0d7bbd373b45f71f6edbf44f03b66914a9f1075d0ebfd4'
 
@@ -153,6 +156,12 @@ def main():
         assert text.count(old) == 1, 'hook anchor not found exactly once in ' + name
         path.write_text(text.replace(old, new), encoding='utf-8')
         changed.add(name.split('/')[0])
+    # The mod bridge provider is registered under the new application id; its own constant follows.
+    provider = dec / 'smali_classes5/com/gtavsource/android/modbridge/ModSpawnProvider.smali'
+    text = provider.read_text(encoding='utf-8')
+    assert OLD_PACKAGE + '.modspawn' in text, 'provider authority not found'
+    provider.write_text(text.replace(OLD_PACKAGE + '.modspawn', PACKAGE + '.modspawn'), encoding='utf-8')
+    changed.add('smali_classes5')
     dictionary = json.loads((HERE.parent / 'zh-CN/dictionary.json').read_text(encoding='utf-8'))
     payload = (json.dumps(dictionary, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
     rebuilt = work / 'rebuilt.apk'
@@ -170,12 +179,16 @@ def main():
     text = manifest.read_text(encoding='utf-8')
     label = 'android:label="%s"' % OLD_NAME
     assert text.count(label) == 1, 'application label not found exactly once'
+    assert text.count('package="%s"' % OLD_PACKAGE) == 1 and text.count(OLD_PACKAGE) == 2, 'application id not found as expected'
+    text = text.replace(OLD_PACKAGE, PACKAGE)
     manifest.write_text(text.replace(label, 'android:label="%s"' % APP_NAME), encoding='utf-8')
     run(args.java, '-jar', args.apktool, 'b', named, '-o', work / 'named.apk')
     binary = zipfile.ZipFile(work / 'named.apk').read('AndroidManifest.xml')
     before = zipfile.ZipFile(base).read('AndroidManifest.xml')
-    grew = 2 * (len(APP_NAME) - len(OLD_NAME))
-    assert APP_NAME.encode('utf-16-le') in binary and 0 <= len(binary) - len(before) - grew < 4, 'manifest changed by more than the name'
+    grew = 2 * (len(APP_NAME) - len(OLD_NAME)) + 4 * (len(PACKAGE) - len(OLD_PACKAGE))
+    utf16 = lambda value: value.encode('utf-16-le')
+    assert utf16(APP_NAME) in binary and utf16(PACKAGE + '\0') in binary and utf16(PACKAGE + '.modspawn') in binary and utf16(OLD_PACKAGE) not in binary, 'manifest names not as expected'
+    assert abs(len(binary) - len(before) - grew) < 8, 'manifest changed by more than the names (%d bytes, expected %d)' % (len(binary) - len(before), grew)
     replace['AndroidManifest.xml'] = binary
     for folder in sorted(changed):
         name = 'classes.dex' if folder == 'smali' else folder.replace('smali_', '') + '.dex'

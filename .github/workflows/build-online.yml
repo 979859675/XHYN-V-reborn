@@ -39,7 +39,7 @@ jobs:
             git checkout "$(tr -dc 0-9a-f < modifications/online/SOURCE)" -- modifications/online/java modifications/online/stubs modifications/online/build_online.py
           fi
           TAG=v0.3-preview2-zh-CN-online$N
-          APK=XiaoChun-GTA5Online-0.3-Preview2-online$N.apk
+          APK=XingZhan-GTA5Online-0.3-Preview2-online$N.apk
           NOTES=releases/0.3-preview2-zh-CN-online$N/RELEASE-NOTES.md
           T=$RUNNER_TEMP/tools; mkdir -p "$T"
           fail() { echo "::error::$1%0A$(tail -n 40 "$T/log.txt" 2>/dev/null | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"; exit 1; }
@@ -64,6 +64,6 @@ jobs:
               gh release upload "$TAG" "$APK" SHA256SUMS.txt --clobber
             else
               gh release create "$TAG" "$APK" SHA256SUMS.txt --target "$GITHUB_SHA" --prerelease \
-                --title "小春GTA5Online · 汉化 + 联机中心（测试版 $N）" --notes-file "$GITHUB_WORKSPACE/$NOTES"
+                --title "星战GTA5Online · 汉化 + 联机中心（测试版 $N）" --notes-file "$GITHUB_WORKSPACE/$NOTES"
             fi
           } > "$T/log.txt" 2>&1 || fail "could not publish the release"

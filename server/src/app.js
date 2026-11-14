@@ -118,7 +118,7 @@ function createApp(config, db, relay = createRelay(config)) {
 
   // ---- accounts -------------------------------------------------------------
   api.get('/info', route(async (_req, res) => {
-    res.json({ name: 'XHYN V Online', version: '0.2.0', inviteRequired: !!config.inviteCode, maxCharacters: config.maxCharacters,
+    res.json({ name: '星战GTA5Online', version: '0.2.0', inviteRequired: !!config.inviteCode, maxCharacters: config.maxCharacters,
       relayPort: relay.port, relayStats: { ...relay.stats, networks: relay.networks } });
   }));
 

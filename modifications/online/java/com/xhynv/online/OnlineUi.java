@@ -161,7 +161,7 @@ public final class OnlineUi {
         card.setPadding(dp(12), dp(10), dp(12), dp(10));
         card.setBackground(box(0xFF1B2230, 10));
         TextView title = new TextView(activity);
-        title.setText("小春GTA5Online · 联机中心");
+        title.setText("星战GTA5Online · 联机中心");
         title.setTextSize(15);
         title.setTextColor(0xFFECF3F8);
         card.addView(title);
