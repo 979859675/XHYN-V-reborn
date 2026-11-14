@@ -36,7 +36,7 @@ public final class Online {
 
     /** The player is in, or on the way into, a public free-for-all room ("公共对战房"). */
     static volatile boolean publicMode;
-    private static volatile boolean enteringPublic, startingPublic;
+    private static volatile boolean enteringPublic, startingPublic, starting;
 
     interface Work<T> { T run() throws ApiException; }
 
@@ -62,13 +62,8 @@ public final class Online {
     static String username() { return app == null ? "" : prefs().getString("username", ""); }
     static String characterName() { return app == null ? "" : prefs().getString("character", ""); }
     static boolean signedIn() { return !token().isEmpty(); }
-    /** Whether rooms created on this phone are opened to the internet through the relay. */
-    static boolean relayEnabled() { return app != null && prefs().getBoolean("relay", true); }
-
-    static void setRelayEnabled(boolean enabled) {
-        prefs().edit().putBoolean("relay", enabled).apply();
-        if (!enabled) relayStatus = "";
-    }
+    /** Every room goes through the server's relay: playing over Wi-Fi, a hotspot or a VPN was removed. */
+    static boolean relayEnabled() { return app != null; }
 
     static void signIn(String token, String username) {
         prefs().edit().putString("token", token).putString("username", username).remove("character").apply();
@@ -163,7 +158,7 @@ public final class Online {
     /**
      * Called by the game when a LAN session starts. Returns the name to play under, or null to refuse
      * (the reason is left in {@link #refusal}). Also decides whether this session goes through the relay.
-     * Any unexpected failure falls back to the typed name and plain LAN so local play keeps working.
+     * Sessions only run over the server's relay; anything else is refused.
      */
     public static String sessionName(Context context, String typed, boolean host, String address) {
         try {
@@ -175,19 +170,20 @@ public final class Online {
             String name = characterName();
             if (!signedIn() || name.isEmpty()) return refuse(NEED_LOGIN, true);
             long now = System.currentTimeMillis();
-            Relay.Session relay = null;
+            Relay.Session relay;
             if (host) {
-                if (relayEnabled() || startingPublic) {
-                    relay = Relay.hostSession;
-                    if (relay == null || !relay.fresh(now)) {
-                        prepareHostRelay();
-                        return refuse("公网联机还没有准备好，请过几秒再点一次。如果一直不行，可以先关闭“公网联机”，用同一 Wi-Fi 或热点联机。", false);
-                    }
+                relay = Relay.hostSession;
+                if (relay == null || !relay.fresh(now)) {
+                    prepareHostRelay();
+                    return refuse("服务器联机还没有准备好，请过几秒再点一次。", false);
                 }
-            } else if (Relay.HOST_IP.equals(address == null ? "" : address.trim())) {
+            } else {
+                if (!Relay.HOST_IP.equals(address == null ? "" : address.trim())) {
+                    return refuse("本版本只支持服务器联机：请在联机中心里点“在线房间”选择房间。", false);
+                }
                 relay = Relay.joinSession;
                 if (relay == null || !relay.fresh(now)) {
-                    return refuse("这个公网房间的连接信息已过期，请在“在线房间”里重新选择它。", false);
+                    return refuse("这个房间的连接信息已过期，请在“在线房间”里重新选择它。", false);
                 }
             }
             Relay.active = relay;
@@ -199,31 +195,41 @@ public final class Online {
             return name;
         } catch (Throwable t) {
             Relay.active = null;
-            return typed;
+            return refuse("联机中心出错了（" + t.getClass().getSimpleName() + "），请重试。", false);
         }
     }
 
-    /**
-     * Called by the game with its "virtual LAN" setting as a session starts. A relayed session uses
-     * whatever network the phone has, so the game's VPN mode (which insists on a connected VPN app) is off for it.
-     */
-    public static boolean virtualFlag(boolean setting) { return Relay.active == null && setting; }
+    /** Called by the game with its "virtual LAN" (VPN) setting as a session starts: that mode is not used any more. */
+    public static boolean virtualFlag(boolean setting) { return false; }
+
+    /** Enters the public free-for-all room; also used to come back after its host has left. */
+    static void enterPublic(Context context) { launch(context, "public", null); }
+
+    /** Opens a room of this phone's own, listed for others to join. */
+    static void createRoom(Context context) { launch(context, "create", null); }
+
+    /** Joins a room picked from the list. */
+    static void joinRoom(Context context, Map<String, Object> room) { launch(context, "join", room); }
 
     /**
-     * Enters the public free-for-all room. The server says what to do: join the room that is open, or,
-     * when nobody is hosting one, open it on this phone. Also used to come back after the host has left.
+     * Starts a session through the server, the only way to play together in this build. For the public
+     * room the server says what to do: join the one that is open or, when nobody hosts one, open it here.
      */
-    static void enterPublic(final Context context) {
+    private static void launch(final Context context, final String kind, final Map<String, Object> picked) {
         init(context);
         final String token = token();
         final String name = characterName();
+        final boolean open = "public".equals(kind);
         if (token.isEmpty() || name.isEmpty()) { toast(NEED_LOGIN); return; }
+        boolean busy = false;
+        try { busy = OnlineBridge.sessionActive(); } catch (Throwable ignored) { }
+        if (busy && !open) { toast("已经在一个房间里了。先在下面点“断开”，再创建或加入别的房间。"); return; }
         synchronized (Online.class) {
             if (enteringPublic) return;
             enteringPublic = true;
         }
-        publicMode = true;
-        toast("正在进入公共对战房…");
+        publicMode = open;
+        toast(open ? "正在进入公共对战房…" : "create".equals(kind) ? "正在创建房间…" : "正在加入房间…");
         Thread thread = new Thread(new Runnable() {
             @Override public void run() {
                 String failure = null;
@@ -234,50 +240,60 @@ public final class Online {
                         main.post(new Runnable() { @Override public void run() { try { LanSession.disconnect(); } catch (Throwable ignored) { } } });
                         for (int i = 0; i < 50 && (i < 2 || OnlineBridge.sessionActive()); i++) Thread.sleep(300);
                     }
-                    publicMode = true;
-                    Map<String, Object> reply = null;
-                    String action = "wait";
-                    for (int attempt = 0; attempt < 12 && "wait".equals(action); attempt++) {
-                        if (attempt > 0) Thread.sleep(3000);
-                        reply = api.call("POST", "/public/enter", Api.empty(), token);
-                        action = Json.string(reply, "action");
+                    publicMode = open;
+                    Map<String, Object> room = picked;
+                    String action = kind.equals("create") ? "host" : "join";
+                    if (open) {
+                        Map<String, Object> reply = null;
+                        action = "wait";
+                        for (int attempt = 0; attempt < 12 && "wait".equals(action); attempt++) {
+                            if (attempt > 0) Thread.sleep(3000);
+                            reply = api.call("POST", "/public/enter", Api.empty(), token);
+                            action = Json.string(reply, "action");
+                        }
+                        room = Json.map(reply, "room");
                     }
                     final boolean host = "host".equals(action);
                     final String code;
                     if (host) {
                         refreshHostRelay(token);
                         Relay.Session session = Relay.hostSession;
-                        if (session == null || !session.fresh(System.currentTimeMillis())) throw new ApiException(0, "公网联机没有准备好（" + relayStatus + "）");
+                        if (session == null || !session.fresh(System.currentTimeMillis())) throw new ApiException(0, "服务器联机没有准备好（" + relayStatus + "）");
                         code = "";
-                    } else if ("join".equals(action)) {
-                        Map<String, Object> room = Json.map(reply, "room");
-                        Relay.joinSession = Relay.open(api, SERVER, token, Json.number(room, "relayNetwork"), null, System.currentTimeMillis());
+                    } else if ("join".equals(action) && room != null) {
+                        long network = Json.number(room, "relayNetwork");
+                        if (network <= 0) throw new ApiException(0, "这个房间不是服务器联机房间（旧版本创建），本版本不能加入");
+                        Relay.joinSession = Relay.open(api, SERVER, token, network, null, System.currentTimeMillis());
                         code = Json.string(room, "roomCode");
                     } else {
                         throw new ApiException(0, "公共对战房正在由别人开启，请稍后再点一次");
                     }
                     main.post(new Runnable() {
                         @Override public void run() {
-                            startingPublic = true;
+                            startingPublic = open;
+                            starting = true;
                             try {
                                 if (host) LanSession.host(context, name);
                                 else LanSession.join(context, name, Relay.HOST_IP, code);
                             } catch (Throwable t) {
-                                toast("进入公共对战房失败：" + t.getClass().getSimpleName());
+                                toast("没能开始联机：" + t.getClass().getSimpleName());
                             } finally {
                                 startingPublic = false;
+                                starting = false;
                                 enteringPublic = false;
                             }
                             boolean started = false;
                             try { started = OnlineBridge.sessionActive(); } catch (Throwable ignored) { }
                             if (!started) {
                                 publicMode = false;
-                                toast("没能进入公共对战房：" + refusal);
-                            } else {
+                                toast("没能开始联机：" + refusal);
+                            } else if (open) {
                                 toast(host ? "公共对战房里现在没有人，已由你开启。进入游戏后其他人会陆续加入。" : "已加入公共对战房。进入游戏即可开打。");
                                 if (host) main.postDelayed(new Runnable() {
                                     @Override public void run() { try { LanSession.setPlayerLimit(context, 10); } catch (Throwable ignored) { } }
                                 }, 1500);
+                            } else {
+                                toast(host ? "房间已创建，其他玩家可以在“在线房间”里加入。现在进入游戏即可。" : "已加入房间。现在进入游戏即可。");
                             }
                         }
                     });
@@ -291,9 +307,9 @@ public final class Online {
                 }
                 publicMode = false;
                 enteringPublic = false;
-                toast("没能进入公共对战房：" + failure);
+                toast("没能开始联机：" + failure);
             }
-        }, "xhyn-public-enter");
+        }, "xhyn-room-launch");
         thread.setDaemon(true);
         thread.start();
     }

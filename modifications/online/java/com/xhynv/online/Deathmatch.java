@@ -8,6 +8,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.os.SystemClock;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
@@ -25,6 +26,7 @@ import com.gtavsource.android.lan.OnlineBridge;
 
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -87,7 +89,13 @@ public final class Deathmatch {
             if (frame == null || frame.length < FRAME_END) return;
             if (!started) start();
             boolean dead = (frame[0] & DEAD_FLAG) != 0;
-            if (dead && !wasDead) deathNote = hex(frame, DAMAGE, FRAME_END - DAMAGE);
+            if (dead && !wasDead) {
+                long now = SystemClock.uptimeMillis();
+                lastDeathAt = now;
+                // A death the rescue caused is not the player's: nobody scores for it.
+                if (now < rescueUntil) rescueUntil = 0;
+                else deathNote = hex(frame, DAMAGE, FRAME_END - DAMAGE);
+            }
             wasDead = dead;
             for (int member = 0; member < MEMBERS; member++) {
                 int at = DAMAGE + member * RECORD;
@@ -136,6 +144,95 @@ public final class Deathmatch {
         }, "xhyn-deathmatch");
         thread.setDaemon(true);
         thread.start();
+        Online.main.postDelayed(new Runnable() {
+            @Override public void run() {
+                watch();
+                Online.main.postDelayed(this, 1000);
+            }
+        }, 1000);
+    }
+
+    // ---- black screen after a respawn ----------------------------------------------
+    // The game itself sometimes comes back from a death with rendering stopped (a black screen, native
+    // FPS 0) until the player has died again once or twice. The fix lives in the game's native code,
+    // so this works around it: when the game's own frame counter stays at zero after a death, the
+    // game's "suicide" room tool is run for the player, and deaths caused that way are not reported.
+    private static volatile long lastDeathAt, rescueUntil;
+    private static long frozenSince, fpsSeenAt, lastRescueAt;
+    private static int rescues;
+    private static Method fpsCurrent;
+    private static Field fpsInput, fpsState;
+    private static int fpsDisabled, fpsPaused;
+    private static boolean fpsBroken;
+
+    /** The game's native frame rate from its frame statistics, or -1 when they are switched off or paused. */
+    private static double nativeFps() {
+        if (fpsBroken) return -1;
+        try {
+            if (fpsCurrent == null) {
+                Class<?> snapshot = Class.forName("com.gtavsource.android.FrameGenerationStats$Snapshot");
+                fpsInput = snapshot.getDeclaredField("inputFps");
+                fpsState = snapshot.getDeclaredField("state");
+                Field disabled = snapshot.getDeclaredField("DISABLED"), paused = snapshot.getDeclaredField("PAUSED");
+                for (Field field : new Field[] { fpsInput, fpsState, disabled, paused }) field.setAccessible(true);
+                fpsDisabled = disabled.getInt(null);
+                fpsPaused = paused.getInt(null);
+                Method current = Class.forName("com.gtavsource.android.FrameGenerationStats").getDeclaredMethod("current");
+                current.setAccessible(true);
+                fpsCurrent = current;
+            }
+            Object snapshot = fpsCurrent.invoke(null);
+            int state = fpsState.getInt(snapshot);
+            if (state == fpsDisabled || state == fpsPaused) return -1;
+            double fps = fpsInput.getDouble(snapshot);
+            return Double.isNaN(fps) ? -1 : fps;
+        } catch (Throwable t) {
+            fpsBroken = true;
+            return -1;
+        }
+    }
+
+    /** Whether the black screen can be noticed without the player's help. */
+    private static boolean canWatch() { return fpsSeenAt != 0; }
+
+    /** UI thread, once a second. */
+    private static void watch() {
+        try {
+            long now = SystemClock.uptimeMillis();
+            double fps = nativeFps();
+            if (fps >= 5) {
+                fpsSeenAt = now;
+                frozenSince = 0;
+                if (now - lastRescueAt > 5000) rescues = 0;
+            } else if (fps >= 0 && fps < 1) {
+                if (frozenSince == 0) frozenSince = now;
+            } else {
+                frozenSince = 0;
+            }
+            long died = lastDeathAt;
+            boolean afterDeath = died != 0 && now - died >= 6000 && now - died < 90_000;
+            if (afterDeath && canWatch() && frozenSince != 0 && now - frozenSince >= 8000 && rescues < 4 && now - lastRescueAt >= 9000
+                    && OnlineBridge.inGame()) {
+                if (rescues == 0) Online.toast("检测到复活后黑屏，正在自动自救（不计战绩）…");
+                rescue();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Runs the game's suicide tool once; the death it causes is not reported. */
+    private static void rescue() {
+        Activity activity = gameActivity();
+        if (activity == null) return;
+        long now = SystemClock.uptimeMillis();
+        lastRescueAt = now;
+        rescues++;
+        rescueUntil = now + 25_000;
+        try {
+            OnlineBridge.suicide(activity);
+        } catch (Throwable t) {
+            rescueUntil = 0;
+        }
     }
 
     // ---- server ---------------------------------------------------------------------
@@ -537,7 +634,7 @@ public final class Deathmatch {
             Activity activity = gameActivity();
             Map<String, Object> current = match;
             Map<String, Object> field = arena;
-            boolean visible = activity != null && inRoom && (current != null || host || field != null);
+            boolean visible = activity != null && inRoom;
             if (!visible) {
                 if (root != null) root.setVisibility(View.GONE);
                 return;
@@ -555,6 +652,13 @@ public final class Deathmatch {
             scroll.setVisibility(expanded ? View.VISIBLE : View.GONE);
             if (!expanded) return;
             List<Item> items = field != null ? arenaItems(field) : items(current);
+            items.add(new Item(0, canWatch() ? "复活后黑屏会自动自救；没有恢复时也可以手动点。" : "复活后黑屏（原版游戏的问题）时点这里，可能要点两三次。打开屏幕顶部的帧率显示后可以自动自救。", null));
+            items.add(new Item(2, "黑屏自救（不计战绩）", new Runnable() {
+                @Override public void run() {
+                    rescue();
+                    Online.toast("正在自救，这次阵亡不计入战绩");
+                }
+            }));
             StringBuilder key = new StringBuilder();
             for (Item item : items) key.append(item.kind).append(item.color).append(item.label).append('\n');
             if (key.toString().equals(drawn)) return;
@@ -653,7 +757,7 @@ public final class Deathmatch {
 
     /** The one-line state shown on the collapsed block and in the title bar. */
     private static String summary(Map<String, Object> current) {
-        if (current == null) return "团队竞技";
+        if (current == null) return host ? "团队竞技" : "联机";
         String state = Json.string(current, "state");
         if ("lobby".equals(state)) return "团队竞技 · 选队中";
         if ("running".equals(state)) {
@@ -724,6 +828,10 @@ public final class Deathmatch {
     private static List<Item> items(Map<String, Object> current) {
         List<Item> items = new ArrayList<Item>();
         String state = current == null ? "" : Json.string(current, "state");
+        if (current == null && !host) {
+            items.add(new Item(1, "房主还没有开团队竞技。\n赛车由房主在“房主专属”里开启。", null));
+            return items;
+        }
         if (current == null) {
             items.add(new Item(1, "两队对战，每队最多 5 人，先达到目标击杀数的队伍获胜；最长 " + MINUTES + " 分钟，时间到按比分定胜负。\n"
                     + "开始后自动打开“队友伤害”，结束后恢复。对方每阵亡一次本队得 1 分。\n房间里的人机会自动补进人少的一队。", null));

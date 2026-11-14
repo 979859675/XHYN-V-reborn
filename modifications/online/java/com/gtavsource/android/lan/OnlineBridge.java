@@ -58,6 +58,11 @@ public final class OnlineBridge {
         return state.active || state.busy;
     }
 
+    /** The game's own "自杀" room tool: the local player dies and respawns. UI thread; needs the game's activity. */
+    public static void suicide(android.app.Activity activity) {
+        LanRoomTools.suicide(activity);
+    }
+
     // ---- diagnostics -----------------------------------------------------------------------------
 
     /** One line saying why the game considers itself ready or not; shown to the host and the administrator. */

@@ -29,7 +29,7 @@ public final class OnlineUi {
 
     private final Activity activity;
     private final TextView status, message;
-    private final LinearLayout buttons;
+    private final LinearLayout buttons, modes;
     private final EditText name, ip, code;
 
     /** Called from the LanPage constructor. Fields a page does not have are null. */
@@ -39,11 +39,44 @@ public final class OnlineUi {
             if (!(context instanceof Activity)) return;
             Online.init(context);
             Online.startReporter();
+            strip(page);
             OnlineUi card = new OnlineUi((Activity) context, page, name, ip, code);
             CARDS.add(new WeakReference<OnlineUi>(card));
             card.render();
         } catch (Throwable ignored) {
             // The LAN page must still open if the card cannot be built.
+        }
+    }
+
+    /**
+     * Playing over Wi-Fi, a hotspot or a VPN was removed: rooms are created and joined through the
+     * server only. Takes the game's controls for those ways off its page.
+     */
+    private static void strip(LinearLayout page) {
+        try {
+            for (String tag : new String[] { "lan-virtual-network", "lan-mode-hint", "lan-ip", "lan-code", "lan-join", "lan-search",
+                    "lan-join-hint", "lan-room-info", "lan-copy" }) {
+                View view = page.findViewWithTag(tag);
+                if (view == null) continue;
+                // A field sits in a row with its label; take the whole row.
+                while (view.getParent() instanceof View && view.getParent() != page) view = (View) view.getParent();
+                if (view.getParent() == page) page.removeView(view);
+            }
+            retext(page);
+        } catch (Throwable ignored) {
+            // Sessions that do not go through the server are refused anyway.
+        }
+    }
+
+    private static void retext(android.view.ViewGroup group) {
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (child instanceof android.view.ViewGroup) { retext((android.view.ViewGroup) child); continue; }
+            if (!(child instanceof TextView) || child instanceof EditText) continue;
+            String text = String.valueOf(((TextView) child).getText());
+            if (text.contains("最多 10 人") && text.contains("热点")) ((TextView) child).setText("最多 10 人 · 服务器联机");
+            else if (text.contains("由一台手机创建房间")) ((TextView) child).setText("创建后房间会出现在“在线房间”里，其他玩家从列表直接加入。可设置 2～10 人（含房主）。");
+            else if (text.contains("Astral") || text.contains("蒲公英") || text.contains("虚拟局域网") || text.contains("热点")) child.setVisibility(View.GONE);
         }
     }
 
@@ -114,6 +147,7 @@ public final class OnlineUi {
         this.status = new TextView(activity);
         this.message = new TextView(activity);
         this.buttons = new LinearLayout(activity);
+        this.modes = new LinearLayout(activity);
     }
 
     private OnlineUi(Activity activity, LinearLayout page, EditText name, EditText ip, EditText code) {
@@ -136,6 +170,9 @@ public final class OnlineUi {
         status.setTextColor(0xFFB6C2D0);
         status.setPadding(0, dp(4), 0, dp(8));
         card.addView(status);
+        modes = new LinearLayout(activity);
+        modes.setOrientation(LinearLayout.VERTICAL);
+        card.addView(modes);
         buttons = new LinearLayout(activity);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
         // The row can be wider than the card on a narrow screen: let it scroll sideways.
@@ -164,33 +201,29 @@ public final class OnlineUi {
     private void render() {
         String character = Online.characterName();
         buttons.removeAllViews();
+        modes.removeAllViews();
         if (!Online.signedIn()) {
             status.setText("未登录。登录并选择角色后，才能创建或加入房间。");
             addButton("登录 / 注册", true, new Runnable() { @Override public void run() { showLogin(); } });
         } else {
             String line = "账号：" + Online.username() + (character.isEmpty() ? "\n还没有选择角色。" : "　角色：" + character);
             if (!syncStatus.isEmpty()) line += "\n" + syncStatus;
+            if (!Online.relayStatus.isEmpty() && !"已就绪".equals(Online.relayStatus)) line += "\n服务器联机：" + Online.relayStatus;
             status.setText(line);
-            addButton(character.isEmpty() ? "选择角色" : "切换角色", character.isEmpty(), new Runnable() { @Override public void run() { showCharacters(); } });
-            if (!character.isEmpty()) addButton("公共对战房", true, new Runnable() {
-                @Override public void run() { Online.enterPublic(activity); }
-            });
-            if (ip != null && code != null) addButton("在线房间", !character.isEmpty(), new Runnable() { @Override public void run() { showRooms(); } });
-            if (name != null && ip == null) {
-                // The "create room" page: choose whether the room is reachable over the internet.
-                final boolean relay = Online.relayEnabled();
-                addButton(relay ? "公网联机：开" : "公网联机：关", false, new Runnable() {
-                    @Override public void run() {
-                        Online.setRelayEnabled(!relay);
-                        if (!relay) Online.prepareHostRelay();
-                        renderAll();
-                    }
-                });
-                line += relay
-                        ? "\n公网联机已开启" + (Online.relayStatus.isEmpty() ? "，正在准备…" : "：" + Online.relayStatus) + "。不在同一网络的玩家也能加入，数据经服务器中转。"
-                        : "\n公网联机已关闭：只有同一 Wi-Fi、热点或虚拟局域网里的玩家能加入。";
-                status.setText(line);
+            if (!character.isEmpty()) {
+                // What can be played, each with its way in.
+                Runnable create = new Runnable() { @Override public void run() { Online.createRoom(activity); } };
+                Runnable rooms = new Runnable() { @Override public void run() { showRooms(); } };
+                Runnable open = new Runnable() { @Override public void run() { Online.enterPublic(activity); } };
+                addHeading("支持的玩法");
+                addMode("赛车", "街头赛车，最多 10 人。进房后房主在“房主专属”里开赛，成绩计入排行榜。",
+                        new String[] { "创建房间", "在线房间" }, new Runnable[] { create, rooms });
+                addMode("团队竞技", "红蓝两队，最多 5 对 5，先达到目标击杀数的队伍获胜。进房后房主在悬浮窗里开赛。",
+                        new String[] { "创建房间", "在线房间" }, new Runnable[] { create, rooms });
+                addMode("个人对战", "公共对战房，随时进入，各打各的，累计个人击杀；有今日榜、本周榜和总榜。",
+                        new String[] { "进入公共对战房" }, new Runnable[] { open });
             }
+            addButton(character.isEmpty() ? "选择角色" : "切换角色", character.isEmpty(), new Runnable() { @Override public void run() { showCharacters(); } });
             addButton("退出登录", false, new Runnable() { @Override public void run() { signOut(); } });
         }
         if (name != null && !character.contentEquals(name.getText())) name.setText(character);
@@ -198,6 +231,41 @@ public final class OnlineUi {
         if (!lanStatus.isEmpty()) lines += (lines.isEmpty() ? "" : "\n") + "联机状态：" + lanStatus;
         message.setText(lines);
         message.setVisibility(lines.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
+    private void addHeading(String text) {
+        TextView heading = new TextView(activity);
+        heading.setText(text);
+        heading.setTextSize(13);
+        heading.setTextColor(0xFFB6C2D0);
+        modes.addView(heading);
+    }
+
+    /** One way to play: its name, a line about it, and the buttons that lead into it. */
+    private void addMode(String title, String about, String[] labels, Runnable[] actions) {
+        LinearLayout block = new LinearLayout(activity);
+        block.setOrientation(LinearLayout.VERTICAL);
+        block.setPadding(dp(12), dp(8), dp(12), dp(10));
+        block.setBackground(box(0xFF242D3D, 8));
+        TextView head = new TextView(activity);
+        head.setText(title);
+        head.setTextSize(15);
+        head.setTextColor(0xFFECF3F8);
+        head.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        block.addView(head);
+        TextView line = new TextView(activity);
+        line.setText(about);
+        line.setTextSize(12);
+        line.setTextColor(0xFFB6C2D0);
+        line.setPadding(0, dp(2), 0, dp(8));
+        block.addView(line);
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < labels.length; i++) row.addView(button(labels[i], i == 0, actions[i]), spaced());
+        block.addView(row);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.setMargins(0, dp(6), 0, dp(2));
+        modes.addView(block, params);
     }
 
     /** Create/join was pressed without an account or a character: say so in a dialog and offer the next step. */
@@ -385,6 +453,7 @@ public final class OnlineUi {
 
     // ---- rooms -----------------------------------------------------------------------------------
 
+    /** The rooms that are open. Picking one joins it at once, through the server. */
     private void showRooms() {
         final String token = Online.token();
         Online.async(new Online.Work<Map<String, Object>>() {
@@ -392,55 +461,34 @@ public final class OnlineUi {
         }, new Online.Done<Map<String, Object>>() {
             @Override public void ok(Map<String, Object> data) {
                 if (activity.isDestroyed()) return;
-                final List<Object> rooms = Json.list(data, "rooms");
+                // Rooms made by old versions over Wi-Fi or a VPN cannot be joined any more.
+                final List<Map<String, Object>> rooms = new ArrayList<Map<String, Object>>();
+                for (Object item : Json.list(data, "rooms")) {
+                    @SuppressWarnings("unchecked") Map<String, Object> room = (Map<String, Object>) item;
+                    if (Json.number(room, "relayNetwork") > 0) rooms.add(room);
+                }
                 AlertDialog.Builder builder = new AlertDialog.Builder(activity).setTitle("在线房间").setNegativeButton("关闭", null)
                         .setNeutralButton("刷新", new DialogInterface.OnClickListener() {
                             @Override public void onClick(DialogInterface dialog, int which) { showRooms(); }
                         });
                 if (rooms.isEmpty()) {
-                    builder.setMessage("现在没有在线房间。房主创建房间后会显示在这里。");
+                    builder.setMessage("现在没有在线房间。可以自己创建一个，或进入公共对战房。");
                 } else {
                     String[] labels = new String[rooms.size()];
                     for (int i = 0; i < labels.length; i++) {
-                        @SuppressWarnings("unchecked") Map<String, Object> room = (Map<String, Object>) rooms.get(i);
-                        labels[i] = Json.string(room, "title") + "\n房主 " + Json.string(room, "hostName") + " · "
-                                + Json.number(room, "players") + "/" + Json.number(room, "maxPlayers") + " 人"
-                                + (Json.number(room, "relayNetwork") > 0 ? " · 公网联机" : Json.flag(room, "virtualLan") ? " · 虚拟局域网" : " · 同一 Wi-Fi / 热点");
+                        Map<String, Object> room = rooms.get(i);
+                        labels[i] = Json.string(room, "title") + (Json.number(room, "public") > 0 ? "（个人对战）" : "") + "\n房主 " + Json.string(room, "hostName") + " · "
+                                + Json.number(room, "players") + "/" + Json.number(room, "maxPlayers") + " 人";
                     }
                     builder.setItems(labels, new DialogInterface.OnClickListener() {
                         @Override public void onClick(DialogInterface dialog, int which) {
-                            @SuppressWarnings("unchecked") Map<String, Object> room = (Map<String, Object>) rooms.get(which);
-                            if (Json.number(room, "relayNetwork") > 0) { pickRelayRoom(room); return; }
-                            Relay.joinSession = null;
-                            ip.setText(Json.string(room, "hostAddress"));
-                            code.setText(Json.string(room, "roomCode"));
-                            Online.toast(Json.flag(room, "virtualLan")
-                                    ? "已填入。这个房间用虚拟局域网：先连上和房主相同的组网并打开“虚拟局域网”开关，再点“加入房间”。"
-                                    : "已填入。连上和房主相同的 Wi-Fi 或热点后，点“加入房间”。");
+                            Map<String, Object> room = rooms.get(which);
+                            if (Json.number(room, "public") > 0) Online.enterPublic(activity);
+                            else Online.joinRoom(activity, room);
                         }
                     });
                 }
                 builder.show();
-            }
-            @Override public void failed(String message) { Online.toast(message); }
-        });
-    }
-
-    /** A room hosted through the relay: get a seat in its relay network first, then fill in the fields. */
-    private void pickRelayRoom(final Map<String, Object> room) {
-        final String token = Online.token();
-        final long network = Json.number(room, "relayNetwork");
-        Online.toast("正在连接公网房间…");
-        Online.async(new Online.Work<Relay.Session>() {
-            @Override public Relay.Session run() throws ApiException {
-                return Relay.open(Online.api, Online.SERVER, token, network, null, System.currentTimeMillis());
-            }
-        }, new Online.Done<Relay.Session>() {
-            @Override public void ok(Relay.Session session) {
-                Relay.joinSession = session;
-                ip.setText(Relay.HOST_IP);
-                code.setText(Json.string(room, "roomCode"));
-                Online.toast("已填入公网房间。直接点“加入房间”即可，不需要组网软件。");
             }
             @Override public void failed(String message) { Online.toast(message); }
         });
@@ -457,7 +505,17 @@ public final class OnlineUi {
         return shape;
     }
 
-    private void addButton(String label, boolean primary, final Runnable action) {
+    private void addButton(String label, boolean primary, Runnable action) {
+        buttons.addView(button(label, primary, action), spaced());
+    }
+
+    private LinearLayout.LayoutParams spaced() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.rightMargin = dp(8);
+        return params;
+    }
+
+    private Button button(String label, boolean primary, final Runnable action) {
         Button button = new Button(activity);
         button.setText(label);
         button.setAllCaps(false);
@@ -472,9 +530,7 @@ public final class OnlineUi {
                 try { action.run(); } catch (Throwable t) { Online.toast("出错了：" + t.getClass().getSimpleName()); }
             }
         });
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        params.rightMargin = dp(8);
-        buttons.addView(button, params);
+        return button;
     }
 
     private LinearLayout form() {

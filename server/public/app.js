@@ -142,9 +142,8 @@
     for (const room of rooms) {
       const title = el('div', { class: 'title' }, room.title);
       if (room.public) title.append(el('span', { class: 'tag on' }, '个人对战'), el('span', { class: 'tag' }, '常驻'));
-      if (room.virtualLan) title.append(el('span', { class: 'tag warn' }, '虚拟局域网'));
+      if (!room.relayNetwork) title.append(el('span', { class: 'tag warn' }, '旧版本的局域网房间，新版不能加入'));
       if (room.players >= room.maxPlayers) title.append(el('span', { class: 'tag bad' }, '已满'));
-      if (room.relayNetwork) title.append(el('span', { class: 'tag' }, '公网联机'));
       if (!room.bots && room.botMirror) title.append(el('span', { class: 'tag' }, '镜像已开，但还没有人机：点“加人机”'));
       if (room.bots) title.append(el('span', { class: 'tag warn' }, `人机 ${room.bots}${room.botMirror ? '（镜像）' : ''}`));
       const setBots = (count, mirror) => (e) => act(e.target, async () => {
@@ -160,22 +159,15 @@
         el('button', { class: 'ghost', onclick: setBots(Math.max(0, room.bots - 1), room.botMirror) }, '减人机'),
         el('button', { class: 'ghost', onclick: setBots(room.botMirror ? room.bots : Math.max(1, room.bots), !room.botMirror) }, room.botMirror ? '关镜像' : '开镜像（实验）'),
       ] : [];
-      const copy = el('button', { class: 'ghost', onclick: async () => {
-        try { await navigator.clipboard.writeText(`${room.hostAddress} ${room.roomCode}`); toast('已复制房主 IP 和房间码'); }
-        catch { toast('复制失败，请手动抄写'); }
-      } }, '复制');
       list.append(el('div', { class: 'item' },
         el('div', { class: 'grow' }, title, el('div', { class: 'sub' }, `房主 ${room.hostName} · ${room.players} / ${room.maxPlayers} 人`),
-          ...(room.relayReached === false ? [el('div', { class: 'sub' }, `中转：服务器还没有收到房主手机的 UDP 数据，别人和人机都进不来。服务器累计收到 UDP 包 ${(info.relayStats || {}).received ?? '?'} 个，其中令牌不认识的 ${(info.relayStats || {}).unknown ?? '?'} 个。收到 0 个 = 包没到服务器（防火墙/安全组没放行 UDP ${info.relayPort || 27950}、域名套了 CDN、或手机网络拦 UDP）；有“不认识的” = 服务器重启过，手机上重开游戏再建房。`)] : []),
+          ...(room.relayReached === false ? [el('div', { class: 'sub' }, `中转：服务器还没有收到房主手机的 UDP 数据，别人和人机都进不来。服务器累计收到 UDP 包 ${(info.relayStats || {}).received ?? '?'} 个，其中令牌不认识的 ${(info.relayStats || {}).unknown ?? '?'} 个。收到 0 个 = 包没到服务器（防火墙/安全组服务器没有放行 UDP ${info.relayPort || 27950}、域名套了 CDN、或手机网络拦 UDP）；有“不认识的” = 服务器重启过，手机上重开游戏再建房。`)] : []),
           ...(room.relayReached === true ? [el('div', { class: 'sub' }, '中转：UDP 通畅')] : []),
           ...(room.debug ? [el('div', { class: 'sub' }, `诊断：${room.debug}`)] : []),
           ...(room.ffa && room.ffa.players.length ? [el('div', { class: 'sub' },
             `个人对战：${room.ffa.players.map((p) => `${p.name}（击杀 ${p.kills} / 阵亡 ${p.deaths}）`).join('　')}`)] : []),
           ...(room.match ? [matchBox(room)] : [])),
-        el('div', { class: 'join' },
-          el('div', {}, el('small', {}, '房主 IP'), el('b', {}, room.hostAddress)),
-          el('div', {}, el('small', {}, '房间码'), el('b', {}, room.roomCode))),
-        el('div', { class: 'actions' }, copy, ...botButtons,
+        el('div', { class: 'actions' }, ...botButtons,
           ...(user.isAdmin ? [el('button', { class: 'danger', onclick: (e) => act(e.target, async () => { await api('DELETE', `/rooms/${room.id}`); await loadRooms(); }) }, '移除')] : []))));
     }
   }
