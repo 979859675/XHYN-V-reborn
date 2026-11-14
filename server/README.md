@@ -115,3 +115,19 @@ npm test
 - 登录和注册接口每个 IP 每分钟限 10 次。
 - **比赛成绩和在线时长由游戏客户端上报，服务器无法验证真伪。** 能做的限制都做了（只有在线房间的房主能上报成绩；时长按真实经过的时间封顶），但改过的客户端仍然可以伪造。排行榜只适合娱乐。
 - 房间列表会把房主的 IP 展示给所有登录用户。局域网和虚拟局域网地址问题不大；不要上报公网 IP。
+
+## 枪战模式与密码重置（联机测试版 10 起）
+
+枪战只在“公网联机”（中转）房间里可用。比赛进行中的状态保存在内存里，结束时写入数据库；服务器重启会丢掉正在进行的那一场。
+
+| 接口 | 谁能调用 | 说明 |
+|---|---|---|
+| `POST /api/match/state {networkId, slot?, hits?}` | 房间里的人 | 取当前枪战；`hits` 是本机玩家刚打伤的成员编号 |
+| `POST /api/match/create {networkId, target, minutes}` | 房主 | 创建（目标击杀数 1～200，时间上限 1～60 分钟） |
+| `POST /api/match/team {networkId, team, userId?}` | 房间里的人 | 选 `red` / `blue`，`null` 为退出；每队最多 5 人；房主可带 `userId` 安排别人 |
+| `POST /api/match/start {networkId}` / `end` | 房主 | 开始；提前结束（按当前比分）或取消 |
+| `POST /api/match/death {networkId, debug?}` | 房间里的人 | 本机玩家阵亡：对方队伍 +1，最后打伤他的人记 1 次击杀 |
+| `GET /api/matches` | 登录用户 | 最近 20 场枪战 |
+| `POST /api/admin/users/:id/password {newPassword}` | 管理员 | 重置某个用户的密码，对方所有登录失效 |
+
+战绩和赛车成绩一样由玩家的游戏上报，不防作弊。

@@ -85,7 +85,33 @@ public final class OnlineBridge {
     private static volatile byte[] hostFrame;
 
     /** Called by the game with each frame the local player sends. */
-    public static void observe(byte[] frame) { hostFrame = frame; }
+    public static void observe(byte[] frame) {
+        hostFrame = frame;
+        com.xhynv.online.Deathmatch.frame(frame);
+    }
+
+    /** The local player's member number in the current session, 0 when there is none. */
+    public static int localSlot() {
+        LanSession.State state = LanSession.state();
+        return state.active ? state.slot : 0;
+    }
+
+    /** Whether members can damage each other in the current session. */
+    public static boolean friendlyFire() { return LanSession.state().friendlyFire; }
+
+    /** Host only: switches damage between members on or off for the room. Call on the UI thread. */
+    public static boolean setFriendlyFire(android.content.Context context, boolean enabled) {
+        return LanSession.setFriendlyFire(context, enabled);
+    }
+
+    /** Host only: shows a line at the top of every member's screen. Returns the game's complaint, or null. */
+    public static String announce(String text) { return LanSession.publishAnnouncement(text); }
+
+    /** Whether the local game session is running and the player is in the game world. */
+    public static boolean inGame() {
+        LanSession.State state = LanSession.state();
+        return state.active && state.gameReady;
+    }
 
     /**
      * A room member that runs on the host's phone, using the game's own networking code. It joins like

@@ -51,6 +51,8 @@ public final class Online {
 
     private static SharedPreferences prefs() { return app.getSharedPreferences("xhyn_online", Context.MODE_PRIVATE); }
 
+    static Context context() { return app; }
+
     static String token() { return app == null ? "" : prefs().getString("token", ""); }
     static String username() { return app == null ? "" : prefs().getString("username", ""); }
     static String characterName() { return app == null ? "" : prefs().getString("character", ""); }
