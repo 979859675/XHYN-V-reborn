@@ -17,6 +17,8 @@ sys.path.insert(0, str(HERE.parent / 'zh-CN'))
 import build_zh  # noqa: E402
 
 NEW_DEX = 'classes12.dex'
+# The picture behind the sign-in screen (Gate.PICTURE), added to the APK's assets.
+PICTURE = 'assets/online/login.jpg'
 APP_NAME = '星战GTA5Online'
 OLD_NAME = 'XHYN V'
 # The application id. The resource table keeps the old name, which the game's own AppResources already allows for.
@@ -299,16 +301,17 @@ def main():
         name = 'classes.dex' if folder == 'smali' else folder.replace('smali_', '') + '.dex'
         replace[name] = built.read(name)
     report['replaced_entries'] = sorted(replace)
-    report['added_entries'] = [NEW_DEX]
+    added = {NEW_DEX: new_dex, PICTURE: (HERE / 'assets/login.jpg').read_bytes()}
+    report['added_entries'] = sorted(added)
     unsigned = work / 'unsigned.apk'
-    build_zh.repack(base, unsigned, dict(replace), {NEW_DEX: new_dex})
+    build_zh.repack(base, unsigned, dict(replace), added)
 
     # 3. Everything not deliberately replaced or added must be byte-identical to the base.
     old, new = zipfile.ZipFile(base), zipfile.ZipFile(unsigned)
     names = [x for x in old.namelist() if not re.fullmatch(r'META-INF/(MANIFEST\.MF|[^/]+\.(SF|RSA))', x)]
-    assert new.namelist() == names + [NEW_DEX]
+    assert new.namelist() == names + sorted(added)
     assert new.testzip() is None
-    assert new.read(NEW_DEX) == new_dex
+    assert all(new.read(name) == data for name, data in added.items())
     for name in names:
         a, b = old.getinfo(name), new.getinfo(name)
         assert a.compress_type == b.compress_type, name

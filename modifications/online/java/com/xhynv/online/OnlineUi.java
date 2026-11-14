@@ -98,14 +98,17 @@ public final class OnlineUi {
         try {
             Online.init(activity);
             Online.startReporter();
-            if (greeted || activity == null) return;
+            if (activity == null) return;
+            // Nobody gets past the sign-in screen; it comes back on every return to the launcher.
+            Gate.show(activity);
+            if (greeted || !Online.signedIn()) return;
             greeted = true;
             Online.main.postDelayed(new Runnable() {
                 @Override public void run() {
                     try {
                         if (activity.isFinishing() || activity.isDestroyed()) { greeted = false; return; }
                         final OnlineUi ui = new OnlineUi(activity);
-                        if (!Online.signedIn()) { ui.showLogin(true); return; }
+                        if (!Online.signedIn()) { greeted = false; Gate.show(activity); return; }
                         final String token = Online.token();
                         Online.async(new Online.Work<String>() {
                             @Override public String run() throws ApiException {
@@ -126,7 +129,7 @@ public final class OnlineUi {
                             }
                             @Override public void failed(String message) {
                                 // Signed out by a rejected token: ask again. A network failure keeps the stored sign-in.
-                                if (!Online.signedIn() && !activity.isFinishing() && !activity.isDestroyed()) ui.showLogin(true);
+                                if (!Online.signedIn()) { greeted = false; Gate.show(activity); }
                             }
                         });
                     } catch (Throwable ignored) {
@@ -330,18 +333,7 @@ public final class OnlineUi {
                 enable(dialog, false);
                 Online.async(new Online.Work<String>() {
                     @Override public String run() throws ApiException {
-                        Map<String, Object> session = Online.api.call("POST", register ? "/auth/register" : "/auth/login", body, null);
-                        String token = Json.string(session, "token");
-                        if (token.isEmpty()) throw new ApiException(502, "联机中心没有返回登录信息");
-                        Online.signIn(token, Json.string(Json.map(session, "user"), "username"));
-                        // Pick up the character already chosen on the website or another phone.
-                        Map<String, Object> mine = Online.api.call("GET", "/characters", null, token);
-                        long active = Json.number(mine, "activeCharacterId");
-                        for (Object item : Json.list(mine, "characters")) {
-                            @SuppressWarnings("unchecked") Map<String, Object> character = (Map<String, Object>) item;
-                            if (Json.number(character, "id") == active) Online.setCharacter(Json.string(character, "name"));
-                        }
-                        return Online.characterName();
+                        return Online.authenticate(register, body);
                     }
                 }, new Online.Done<String>() {
                     @Override public void ok(String character) {
@@ -371,6 +363,8 @@ public final class OnlineUi {
         final String token = Online.token();
         Online.signOut();
         renderAll();
+        greeted = false;
+        Gate.show(activity);
         Online.async(new Online.Work<Object>() {
             @Override public Object run() throws ApiException { return Online.api.call("POST", "/auth/logout", Api.empty(), token); }
         }, new Online.Done<Object>() {
@@ -380,6 +374,9 @@ public final class OnlineUi {
     }
 
     // ---- characters ------------------------------------------------------------------------------
+
+    /** The character list, for a caller without a card. */
+    static void chooseCharacter(Activity activity) { new OnlineUi(activity).showCharacters(); }
 
     private void showCharacters() {
         final String token = Online.token();

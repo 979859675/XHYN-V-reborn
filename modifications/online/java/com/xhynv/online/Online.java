@@ -71,6 +71,24 @@ public final class Online {
         Relay.joinSession = null;
     }
 
+    /**
+     * Signs in or registers, stores the session and picks up the character already chosen on the
+     * website or another phone. Returns that character's name, "" when there is none yet.
+     */
+    static String authenticate(boolean register, Map<String, Object> body) throws ApiException {
+        Map<String, Object> session = api.call("POST", register ? "/auth/register" : "/auth/login", body, null);
+        String token = Json.string(session, "token");
+        if (token.isEmpty()) throw new ApiException(502, "联机中心没有返回登录信息");
+        signIn(token, Json.string(Json.map(session, "user"), "username"));
+        Map<String, Object> mine = api.call("GET", "/characters", null, token);
+        long active = Json.number(mine, "activeCharacterId");
+        for (Object item : Json.list(mine, "characters")) {
+            @SuppressWarnings("unchecked") Map<String, Object> character = (Map<String, Object>) item;
+            if (Json.number(character, "id") == active) setCharacter(Json.string(character, "name"));
+        }
+        return characterName();
+    }
+
     static void setCharacter(String name) { prefs().edit().putString("character", name).apply(); }
 
     static void signOut() {
