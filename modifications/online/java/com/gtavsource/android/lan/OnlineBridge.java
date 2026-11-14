@@ -96,6 +96,7 @@ public final class OnlineBridge {
         final String code;
         volatile boolean mirror, dead;
         volatile String note = "", reason = "";
+        volatile int slot;
         volatile LanTransport transport;
         private byte[] last;
 
@@ -111,6 +112,8 @@ public final class OnlineBridge {
             dead = true;
         }
         @Override public void receive(byte[] frame) { }
+        /** The member number the host gave this bot; its frames must carry it. */
+        @Override public void assigned(int slot) { this.slot = slot; }
 
         @Override public byte[] snapshot() {
             if (!mirror) {
@@ -120,13 +123,14 @@ public final class OnlineBridge {
             }
             try {
                 byte[] frame = hostFrame;
-                String skip = skipReason(frame);
+                int slot = this.slot;
+                String skip = slot < 1 ? "还没有分到成员编号" : skipReason(frame);
                 if (skip != null) {
                     note = last != null ? "镜像,停留:" + skip : "镜像未开始:" + skip;
                 } else {
                     // The game decides what a legal frame is; try the plain copy first, then without the "initial car" mark.
-                    byte[] made = mirrored(frame, index, false);
-                    if (!LanFrame.valid(made)) made = mirrored(frame, index, true);
+                    byte[] made = mirrored(frame, index, slot, false);
+                    if (!LanFrame.valid(made)) made = mirrored(frame, index, slot, true);
                     if (LanFrame.valid(made)) {
                         last = made;
                         note = "镜像中";
@@ -170,13 +174,13 @@ public final class OnlineBridge {
     }
 
     /** The host's frame moved a few metres aside, without the parts only a host or a driver sends. */
-    static byte[] mirrored(byte[] frame, int index, boolean dropInitialCar) {
+    static byte[] mirrored(byte[] frame, int index, int slot, boolean dropInitialCar) {
         byte[] copy = frame.clone();
         ByteBuffer out = ByteBuffer.wrap(copy).order(ByteOrder.LITTLE_ENDIAN);
         int flags = out.getInt(FLAGS) & ~WORLD_FLAG;
         if (dropInitialCar) flags &= ~CAR_INITIAL_FLAG;
         out.putInt(FLAGS, flags);
-        out.putInt(SLOT, 0);                                   // the bot's own transport fills in its member number
+        out.putInt(SLOT, slot);                                // a ready frame must carry its sender's member number
         out.putInt(VEHICLE_COUNT, 0);
         Arrays.fill(copy, VEHICLES, RULES, (byte) 0);          // world vehicles
         Arrays.fill(copy, RULES, HEALTH_EPOCH, (byte) 0);      // room rules, damage dealt, melee

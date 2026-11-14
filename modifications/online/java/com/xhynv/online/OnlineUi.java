@@ -183,7 +183,6 @@ public final class OnlineUi {
                         ? "\n公网联机已开启" + (Online.relayStatus.isEmpty() ? "，正在准备…" : "：" + Online.relayStatus) + "。不在同一网络的玩家也能加入，数据经服务器中转。"
                         : "\n公网联机已关闭：只有同一 Wi-Fi、热点或虚拟局域网里的玩家能加入。";
                 status.setText(line);
-                addButton("人机测试", false, new Runnable() { @Override public void run() { showBots(); } });
             }
             addButton("退出登录", false, new Runnable() { @Override public void run() { signOut(); } });
         }
@@ -418,33 +417,6 @@ public final class OnlineUi {
             }
             @Override public void failed(String message) { Online.toast(message); }
         });
-    }
-
-    /** Test bots for the caller's own relayed room. The same setting is on the website's room list. */
-    private void showBots() {
-        final String token = Online.token();
-        final String[] labels = { "不要人机", "1 个人机", "2 个人机", "3 个人机", "1 个镜像人机（实验）" };
-        new AlertDialog.Builder(activity).setTitle("人机测试（需先用公网联机创建房间）")
-                .setItems(labels, new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface dialog, final int which) {
-                        Online.async(new Online.Work<String>() {
-                            @Override public String run() throws ApiException {
-                                String mine = Online.characterName();
-                                for (Object item : Json.list(Online.api.call("GET", "/rooms", null, token), "rooms")) {
-                                    @SuppressWarnings("unchecked") Map<String, Object> room = (Map<String, Object>) item;
-                                    if (!mine.equals(Json.string(room, "hostName")) || !room.containsKey("debug")) continue;
-                                    Online.api.call("POST", "/rooms/" + Json.number(room, "id") + "/bots",
-                                            Json.of("count", which == 4 ? 1 : which, "mirror", which == 4), token);
-                                    return which == 0 ? "人机会在 10 秒内离开" : "人机会在 10～20 秒内加入房间";
-                                }
-                                throw new ApiException(404, "没有找到你的房间。请先创建房间，等卡片显示“房间已显示在在线房间列表”。");
-                            }
-                        }, new Online.Done<String>() {
-                            @Override public void ok(String message) { Online.toast(message); }
-                            @Override public void failed(String message) { Online.toast(message); }
-                        });
-                    }
-                }).setNegativeButton("取消", null).show();
     }
 
     /** A room hosted through the relay: get a seat in its relay network first, then fill in the fields. */

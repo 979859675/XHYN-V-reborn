@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: MIT
+name: Publish online7 release
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - releases/0.3-preview2-zh-CN-online7/**
+      - .github/workflows/publish-online.yml
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.repository != 'XHYN-PH/XHYN-V-reborn'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: v0.3-preview2-zh-CN-online7
+      APK: XiaoChun-GTA5Online-0.3-Preview2-online7.apk
+      BASE: XHYN-V-0.3-Preview2-zh-CN.apk
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rebuild and verify the APK
+        run: |
+          set -euo pipefail
+          cd releases/0.3-preview2-zh-CN
+          cat "$BASE.part0" "$BASE.part1" "$BASE.part2" > "$BASE"
+          sha256sum -c SHA256SUMS.txt
+          cd ../0.3-preview2-zh-CN-online7
+          python3 ../../modifications/online/apk_delta.py apply "../0.3-preview2-zh-CN/$BASE" . "$APK"
+          sha256sum -c SHA256SUMS.txt
+      - name: Create or update the release
+        working-directory: releases/0.3-preview2-zh-CN-online7
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" "$APK" SHA256SUMS.txt --target "$GITHUB_SHA" --prerelease \
+              --title "小春GTA5Online · 汉化 + 联机中心（测试版 7）" --notes-file RELEASE-NOTES.md
+          fi

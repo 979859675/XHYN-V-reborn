@@ -6,6 +6,7 @@ public final class LanTransport {
         void disconnected();
         void receive(byte[] frame);
         byte[] snapshot();
+        default void assigned(int slot) { }
     }
     public static LanTransport join(String address, String name, String code, Source source, boolean virtualNetwork) { throw new UnsupportedOperationException(); }
     public void start() { throw new UnsupportedOperationException(); }
