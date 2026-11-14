@@ -36,14 +36,15 @@ public final class Online {
 
     /** The player is in, or on the way into, a public free-for-all room ("公共对战房"). */
     static volatile boolean publicMode;
-    /** What the room this phone is in was made for: "race", "team", or "" (a public room, or a room that does not say). */
+    /** What the room this phone is in was made for: "race", "team", "ffa", or "" (a room that does not say). */
     static volatile String roomMode = "";
-    private static final String RACE_ROOM = " 的赛车房", TEAM_ROOM = " 的团队竞技房";
+    private static final String RACE_ROOM = " 的赛车房", TEAM_ROOM = " 的团队竞技房", FFA_ROOM = " 的个人战房";
+    static String modeName(String mode) { return "race".equals(mode) ? "赛车房" : "team".equals(mode) ? "团队竞技房" : "ffa".equals(mode) ? "个人战房" : "房间"; }
 
     /** The mode a room's name in the list stands for. */
     static String modeOf(String title) {
         if (title == null) return "";
-        return title.endsWith(RACE_ROOM) ? "race" : title.endsWith(TEAM_ROOM) ? "team" : "";
+        return title.endsWith(RACE_ROOM) ? "race" : title.endsWith(TEAM_ROOM) ? "team" : title.endsWith(FFA_ROOM) ? "ffa" : "";
     }
     private static volatile boolean enteringPublic, startingPublic, starting;
 
@@ -286,7 +287,8 @@ public final class Online {
                         room = Json.map(reply, "room");
                     }
                     final boolean host = "host".equals(action);
-                    final String wanted = open ? "" : "create".equals(kind) ? pendingMode : modeOf(room == null ? null : Json.string(room, "title"));
+                    final String wanted = open ? "" : "create".equals(kind) ? pendingMode
+                            : room != null && Json.number(room, "public") > 0 ? "ffa" : modeOf(room == null ? null : Json.string(room, "title"));
                     final String code;
                     if (host) {
                         refreshHostRelay(token);
@@ -327,7 +329,7 @@ public final class Online {
                                     @Override public void run() { try { LanSession.setPlayerLimit(context, 10); } catch (Throwable ignored) { } }
                                 }, 1500);
                             } else {
-                                String what = "race".equals(wanted) ? "赛车房" : "team".equals(wanted) ? "团队竞技房" : "房间";
+                                String what = modeName(wanted);
                                 toast(host ? what + "已创建，其他玩家可以在对应玩法的房间列表里加入。现在进入游戏即可。" : "已加入" + what + "。现在进入游戏即可。");
                             }
                         }
@@ -499,7 +501,8 @@ public final class Online {
             s.virtualLan = !relayed && state.virtualNetwork;
             s.publicRoom = relayed && publicMode;
             String mode = roomMode;
-            if (!s.publicRoom && !mode.isEmpty()) s.title = characterName() + ("race".equals(mode) ? RACE_ROOM : TEAM_ROOM);
+            if (!s.publicRoom && !mode.isEmpty()) s.title = characterName() + ("race".equals(mode) ? RACE_ROOM : "ffa".equals(mode) ? FFA_ROOM : TEAM_ROOM);
+            if (!s.publicRoom && "ffa".equals(mode)) s.mode = "ffa";
             s.address = relayed ? Relay.HOST_IP : address(state.virtualNetwork);
             try {
                 s.debug = OnlineBridge.diagnostics() + relayNote() + (botError.isEmpty() ? "" : " | " + botError);

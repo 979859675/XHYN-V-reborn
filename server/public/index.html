@@ -59,7 +59,7 @@
       <div class="modes">
         <div class="mode race"><h3>🏁 街头赛车</h3><p>自己创建房间，房主在“房主专属”里选赛道开赛。单程冲刺或绕圈，成绩自动上榜。</p></div>
         <div class="mode team"><h3>⚔️ 团队竞技</h3><p>红蓝两队，每队最多 5 人，先到目标击杀数获胜，时间到按比分结算。终结连杀者本队得 2 分。</p></div>
-        <div class="mode ffa"><h3>🔥 个人对战</h3><p>公共对战房常驻开放。每局先到 <b id="mode-target">20</b> 分获胜，<b id="mode-minutes">10</b> 分钟到点按得分结算，15 秒后自动下一局。</p></div>
+        <div class="mode ffa"><h3>🔥 个人对战</h3><p>在联机页创建或加入个人战房，各打各的。每局先到 <b id="mode-target">20</b> 分获胜，<b id="mode-minutes">10</b> 分钟到点按得分结算，15 秒后自动下一局。</p></div>
         <div class="mode streak"><h3>💰 连杀与悬赏</h3><p>连杀 3 / 5 / 7 次全房公告，名字变金色。击杀金色名字的玩家得双倍分。</p></div>
       </div>
       <div class="row-head"><h2>在线房间</h2><button class="ghost" id="rooms-refresh">刷新</button></div>
@@ -146,7 +146,7 @@
       </div>
       <div class="sub-view" data-sub="ffa" hidden>
         <div class="row-head"><h3>个人对战战绩</h3><button class="danger" id="ffa-reset-all">全部清零</button></div>
-        <p class="hint">公共对战房里的累计战绩。每一次阵亡记一条；没有击杀者的是摔死、被警察打死等。</p>
+        <p class="hint">个人战房里的累计战绩。每一次阵亡记一条；没有击杀者的是摔死、被警察打死等。</p>
         <form class="search" id="players-search"><input id="players-q" placeholder="搜索角色名" maxlength="32"><button class="ghost">搜索</button></form>
         <div class="table-wrap"><table id="ffa-players"><thead><tr><th>角色</th><th class="num">累计击杀</th><th class="num">累计阵亡</th><th class="num">今日击杀</th><th>最近参战</th><th></th></tr></thead><tbody></tbody></table></div>
         <div class="pager" id="players-pager"></div>

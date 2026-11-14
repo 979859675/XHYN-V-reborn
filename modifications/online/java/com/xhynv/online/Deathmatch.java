@@ -360,7 +360,7 @@ public final class Deathmatch {
         deathNote = null;
         if (note != null) body.put("debug", note);
         try {
-            if (arenaNetwork == session.networkId || Online.publicMode) {
+            if (arenaNetwork == session.networkId || Online.publicMode || "ffa".equals(Online.roomMode)) {
                 try {
                     if (note != null) body.put("death", true);
                     acceptArena(Online.api.call("POST", "/ffa/state", body, token), session.networkId);
@@ -416,6 +416,8 @@ public final class Deathmatch {
             arena = null;
             Online.toast("公共对战房的房主离开了，正在重新进入…");
             Online.enterPublic(activityOrApp());
+        } else if (goneCount == 2 && !Online.publicMode) {
+            Online.toast("房主离开了，这个个人战房已关闭。可以在联机页重新创建或加入别的个人战房。");
         }
     }
 
@@ -678,7 +680,7 @@ public final class Deathmatch {
             Map<String, Object> current = match;
             Map<String, Object> field = arena;
             // A racing room has no window of its own: the race is run from the game's host tools.
-            boolean visible = activity != null && inRoom && (field != null || !"race".equals(Online.roomMode));
+            boolean visible = activity != null && inRoom && (field != null || "team".equals(Online.roomMode) || Online.roomMode.isEmpty());
             if (!visible) {
                 if (root != null) root.setVisibility(View.GONE);
                 return;
@@ -762,7 +764,7 @@ public final class Deathmatch {
     private static List<Item> arenaItems(Map<String, Object> field) {
         List<Item> items = new ArrayList<Item>();
         Map<String, Object> me = Json.map(field, "me");
-        items.add(new Item(0, "公共对战房 " + Json.number(field, "public") + (host ? " · 你是房主" : ""), null));
+        items.add(new Item(0, "个人战房" + (host ? " · 你是房主" : ""), null));
         Map<String, Object> round = Json.map(field, "round");
         boolean ended = round != null && !"running".equals(Json.string(round, "state"));
         if (round != null && ended) {
@@ -803,10 +805,10 @@ public final class Deathmatch {
         }
         items.add(new Item(0, "各打各的，只算自己的击杀；赛季段位榜、今日榜、本周榜和总榜在网页“排行榜”里。"
                 + (host ? "\n你退出后，房间会由下一位玩家接手。" : ""), null));
-        items.add(new Item(2, "退出公共对战房", new Runnable() {
+        items.add(new Item(2, "退出个人战房", new Runnable() {
             @Override public void run() {
                 Online.leavePublic();
-                Online.toast("已退出公共对战房");
+                Online.toast("已退出个人战房");
             }
         }));
         return items;

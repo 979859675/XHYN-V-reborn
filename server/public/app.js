@@ -229,16 +229,15 @@
 
   async function loadRooms() {
     loadMine().catch(() => {});
-    const { rooms, publicOpen } = await api('GET', '/rooms');
+    const { rooms } = await api('GET', '/rooms');
     const list = $('rooms');
     list.replaceChildren();
-    if (!publicOpen) list.append(el('div', { class: 'item' }, el('div', { class: 'grow' },
-      el('div', { class: 'title' }, '公共对战房 1', el('span', { class: 'tag on' }, '个人对战'), el('span', { class: 'tag' }, '常驻')),
-      el('div', { class: 'sub' }, '现在里面没有人。在手机联机页点“个人对战”进入，第一个进的人自动当房主。每局先到 20 分获胜，打完自动开下一局。'))));
-    if (!rooms.length) list.append(empty('现在没有其他在线房间。在游戏里创建房间后，它会出现在这里。'));
+    if (!rooms.length) list.append(empty('现在没有在线房间。在手机联机页的玩法卡片里创建赛车房、团队竞技房或个人战房后，它会出现在这里。'));
     for (const room of rooms) {
       const title = el('div', { class: 'title' }, room.title);
-      if (room.public) title.append(el('span', { class: 'tag on' }, '个人对战'), el('span', { class: 'tag' }, '常驻'));
+      if (room.public) title.append(el('span', { class: 'tag on' }, '个人对战'));
+      else if (room.title.endsWith(' 的赛车房')) title.append(el('span', { class: 'tag on' }, '赛车'));
+      else if (room.title.endsWith(' 的团队竞技房')) title.append(el('span', { class: 'tag on' }, '团队竞技'));
       if (!room.relayNetwork) title.append(el('span', { class: 'tag warn' }, '旧版本的局域网房间，新版不能加入'));
       if (room.players >= room.maxPlayers) title.append(el('span', { class: 'tag bad' }, '已满'));
       if (!room.bots && room.botMirror) title.append(el('span', { class: 'tag' }, '镜像已开，但还没有人机：点“加人机”'));
@@ -313,7 +312,7 @@
     const body = $('ffa-board').tBodies[0];
     pagedRows(board, 'ffa-pager', (rows, offset) => {
       body.replaceChildren();
-      if (!board.length) return body.append(el('tr', {}, el('td', { colspan: '5', class: 'sub' }, '这个时间段还没有人上榜。去公共对战房打一场吧。')));
+      if (!board.length) return body.append(el('tr', {}, el('td', { colspan: '5', class: 'sub' }, '这个时间段还没有人上榜。去个人战房打一场吧。')));
       rows.forEach((row, index) => body.append(mine(el('tr', {}, place(offset + index), el('td', {}, row.name),
         el('td', { class: 'num' }, String(row.kills)), el('td', { class: 'num' }, String(row.deaths)),
         el('td', { class: 'num' }, (row.kills / Math.max(1, row.deaths)).toFixed(2))), row.name)));
@@ -450,7 +449,7 @@
     const log = $('ffa-kills').tBodies[0];
     log.replaceChildren();
     if (!kills.length) log.append(el('tr', {}, el('td', { colspan: '4', class: 'sub' }, '没有记录。')));
-    for (const row of kills) log.append(el('tr', {}, el('td', {}, when(row.at)), el('td', {}, `公共对战房 ${row.room}`),
+    for (const row of kills) log.append(el('tr', {}, el('td', {}, when(row.at)), el('td', {}, `个人战房 ${row.room}`),
       el('td', {}, row.killer || '—（无人击杀）'), el('td', {}, row.victim)));
   }
   async function loadFfaAdmin() {

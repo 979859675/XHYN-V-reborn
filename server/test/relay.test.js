@@ -500,3 +500,22 @@ test('team deathmatch: ending a streak scores double and both sides get rank poi
   assert.equal(done.rank.points, 20 + 3 * 2 - 1);
   assert.equal((await call('POST', '/api/match/state', guestToken, body())).data.rank.points, 2 * 2 - 3);
 });
+
+test('a room made as a free-for-all keeps its name, is listed with its players and runs the free-for-all', async () => {
+  const a = await player('soloone'), b = await player('solotwo');
+  const net = (await call('POST', '/api/relay/host', a, {})).data.relay;
+  const room = (await call('POST', '/api/rooms', a, { hostAddress: '10.77.0.1', roomCode: '444444', mode: 'ffa', title: 'solooneC 的个人战房', maxPlayers: 10 })).data.room;
+  assert.equal(room.title, 'solooneC 的个人战房');
+  assert.ok(room.public > 0);
+  await call('POST', `/api/rooms/${room.id}/heartbeat`, a, { players: 2 });
+  const listed = (await call('GET', '/api/rooms', b)).data.rooms.find((r) => r.id === room.id);
+  assert.deepEqual([listed.public, listed.players, listed.maxPlayers], [room.public, 2, 10]);
+  await call('POST', '/api/relay/join', b, { networkId: net.networkId });
+  const state = (await call('POST', '/api/ffa/state', b, { networkId: net.networkId, slot: 2 })).data;
+  assert.equal(state.round.state, 'running');
+  assert.equal((await call('POST', '/api/match/create', a, { networkId: net.networkId })).status, 409);
+  // Without the mode it is an ordinary room.
+  const plain = (await call('POST', '/api/rooms', a, { hostAddress: '10.77.0.1', roomCode: '444444', title: 'solooneC 的赛车房' })).data.room;
+  assert.equal(plain.public, 0);
+  await call('DELETE', `/api/rooms/${plain.id}`, a);
+});

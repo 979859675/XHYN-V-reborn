@@ -354,10 +354,16 @@ function createApp(config, db, relay = createRelay(config)) {
       String(body.gameVersion || '').slice(0, 32),
     ];
     // The room of someone who was just told to open the public room is that public room.
-    const promised = pendingHosts.get(Number(req.user.id));
+    const promise = pendingHosts.get(Number(req.user.id));
     pendingHosts.delete(Number(req.user.id));
-    const number = body.public && promised && promised.until >= now() && values[2] === HOST_IP ? promised.number : 0;
+    const promised = body.public && promise && promise.until >= now() && values[2] === HOST_IP ? promise.number : 0;
+    let number = promised;
     if (number) { values[1] = publicTitle(number); values[5] = 10; }
+    // A room made as a free-for-all ("个人战房") keeps its own name; its number tells the rooms apart in the kill log.
+    if (!number && body.mode === 'ffa' && values[2] === HOST_IP) {
+      const taken = new Set((await publicRows()).filter((row) => Number(row.user_id) !== Number(req.user.id)).map((row) => extra(row.id).public));
+      for (number = 1; taken.has(number);) number++;
+    }
     const stamp = now();
     const id = await db.tx(async (tx) => {
       await tx.run('DELETE FROM rooms WHERE user_id = ?', [req.user.id]);
@@ -389,7 +395,7 @@ function createApp(config, db, relay = createRelay(config)) {
     if (!row) throw new ApiError(404, 'not_found', '房间不存在或已过期');
     if (!req.user.is_admin && Number(row.user_id) !== Number(req.user.id)) throw new ApiError(403, 'forbidden', '只有房主或管理员可以设置人机');
     if (row.host_address !== HOST_IP) throw bad('只有用“公网联机”创建的房间可以加人机', 'not_relayed');
-    if (extra(id).public) throw bad('公共对战房不能加人机', 'public_room');
+    if (extra(id).public) throw bad('个人战房不能加人机', 'public_room');
     // "fill" asks for as many bots as there are free seats.
     const count = req.body.fill
       ? Math.max(0, Math.min(MAX_BOTS, Number(row.max_players) - Math.max(1, relay.realCount(Number(row.user_id)))))
@@ -796,7 +802,7 @@ function createApp(config, db, relay = createRelay(config)) {
   // Creating replaces a match that is not being played.
   api.post('/match/create', match(async (req, context) => {
     hostOnly(context);
-    if (await publicRoomOf(context.networkId)) throw new ApiError(409, 'public_room', '公共对战房只有个人对战，不能开团队竞技');
+    if (await publicRoomOf(context.networkId)) throw new ApiError(409, 'public_room', '个人战房只有个人对战，不能开团队竞技');
     if (context.match && context.match.state === 'running') throw new ApiError(409, 'running', '团队竞技正在进行，请先结束');
     const character = req.user.active_character_id == null ? null : await db.get('SELECT name FROM characters WHERE id = ?', [req.user.active_character_id]);
     const created = { state: 'lobby', hostId: Number(req.user.id), hostName: character ? character.name : req.user.username,

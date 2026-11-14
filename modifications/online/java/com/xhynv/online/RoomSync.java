@@ -17,6 +17,8 @@ final class RoomSync {
         boolean publicRoom;
         /** The room's name in the list; "" lets the server name it. */
         String title = "";
+        /** "ffa" asks the server to run the room as a free-for-all; "" otherwise. */
+        String mode = "";
         String code = "";
         String address = "";
         int players;
@@ -77,6 +79,7 @@ final class RoomSync {
                                 "hostAddress", s.address, "roomCode", s.code, "virtualLan", s.virtualLan, "public", s.publicRoom,
                                 "maxPlayers", clamp(s.limit, 2, 10), "gameVersion", gameVersion);
                         if (s.title != null && !s.title.isEmpty()) body.put("title", s.title);
+                        if (s.mode != null && !s.mode.isEmpty()) body.put("mode", s.mode);
                         Map<String, Object> made = api.call("POST", "/rooms", body, token);
                         roomId = Json.number(Json.map(made, "room"), "id");
                         roomToken = token;

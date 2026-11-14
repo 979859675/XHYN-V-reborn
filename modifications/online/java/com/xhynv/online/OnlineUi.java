@@ -219,14 +219,15 @@ public final class OnlineUi {
                 Runnable team = new Runnable() { @Override public void run() { Online.createRoom(activity, "team"); } };
                 Runnable raceRooms = new Runnable() { @Override public void run() { showRooms("race"); } };
                 Runnable teamRooms = new Runnable() { @Override public void run() { showRooms("team"); } };
-                Runnable open = new Runnable() { @Override public void run() { Online.enterPublic(activity); } };
+                Runnable solo = new Runnable() { @Override public void run() { Online.createRoom(activity, "ffa"); } };
+                Runnable soloRooms = new Runnable() { @Override public void run() { showRooms("ffa"); } };
                 addHeading("支持的玩法");
                 addMode("赛车", "街头赛车，最多 10 人。进房后房主在“房主专属”里开赛，成绩计入排行榜。",
                         new String[] { "创建赛车房", "赛车房列表" }, new Runnable[] { race, raceRooms });
                 addMode("团队竞技", "红蓝两队，最多 5 对 5，先达到目标击杀数的队伍获胜。进房后房主在悬浮窗里开赛。",
                         new String[] { "创建团队竞技房", "团队竞技房列表" }, new Runnable[] { team, teamRooms });
-                addMode("个人对战", "公共对战房，随时进入。每局先到 20 分获胜，10 分钟到点按得分结算；连杀有悬赏，战绩计入赛季段位。",
-                        new String[] { "进入公共对战房" }, new Runnable[] { open });
+                addMode("个人对战", "各打各的，最多 10 人。每局先到 20 分获胜，10 分钟到点按得分结算；连杀有悬赏，战绩计入赛季段位。",
+                        new String[] { "创建个人战房", "个人战房列表" }, new Runnable[] { solo, soloRooms });
             }
             addButton(character.isEmpty() ? "选择角色" : "切换角色", character.isEmpty(), new Runnable() { @Override public void run() { showCharacters(); } });
             addButton("退出登录", false, new Runnable() { @Override public void run() { signOut(); } });
@@ -453,10 +454,10 @@ public final class OnlineUi {
     // ---- rooms -----------------------------------------------------------------------------------
 
     /** The rooms that are open. Picking one joins it at once, through the server. */
-    /** The rooms of one mode ("race" or "team"); rooms that do not say what they are for are listed in both. */
+    /** The rooms of one mode ("race", "team" or "ffa"), each with how many players are in it. */
     private void showRooms(final String mode) {
         final String token = Online.token();
-        final String what = "race".equals(mode) ? "赛车房" : "团队竞技房";
+        final String what = Online.modeName(mode);
         Online.async(new Online.Work<Map<String, Object>>() {
             @Override public Map<String, Object> run() throws ApiException { return Online.api.call("GET", "/rooms", null, token); }
         }, new Online.Done<Map<String, Object>>() {
@@ -466,9 +467,10 @@ public final class OnlineUi {
                 final List<Map<String, Object>> rooms = new ArrayList<Map<String, Object>>();
                 for (Object item : Json.list(data, "rooms")) {
                     @SuppressWarnings("unchecked") Map<String, Object> room = (Map<String, Object>) item;
-                    if (Json.number(room, "relayNetwork") <= 0 || Json.number(room, "public") > 0) continue;
-                    String made = Online.modeOf(Json.string(room, "title"));
-                    if (made.isEmpty() || made.equals(mode)) rooms.add(room);
+                    if (Json.number(room, "relayNetwork") <= 0) continue;
+                    // The server marks free-for-all rooms; a room that does not say what it is for is listed under racing and team play.
+                    String made = Json.number(room, "public") > 0 ? "ffa" : Online.modeOf(Json.string(room, "title"));
+                    if (made.equals(mode) || (made.isEmpty() && !"ffa".equals(mode))) rooms.add(room);
                 }
                 AlertDialog.Builder builder = new AlertDialog.Builder(activity).setTitle(what + "列表").setNegativeButton("关闭", null)
                         .setNeutralButton("刷新", new DialogInterface.OnClickListener() {
@@ -480,14 +482,14 @@ public final class OnlineUi {
                     String[] labels = new String[rooms.size()];
                     for (int i = 0; i < labels.length; i++) {
                         Map<String, Object> room = rooms.get(i);
-                        labels[i] = Json.string(room, "title") + (Json.number(room, "public") > 0 ? "（个人对战）" : "") + "\n房主 " + Json.string(room, "hostName") + " · "
+                        boolean full = Json.number(room, "players") >= Json.number(room, "maxPlayers");
+                        labels[i] = Json.string(room, "title") + (full ? "（已满）" : "") + "\n房主 " + Json.string(room, "hostName") + " · 在线 "
                                 + Json.number(room, "players") + "/" + Json.number(room, "maxPlayers") + " 人";
                     }
                     builder.setItems(labels, new DialogInterface.OnClickListener() {
                         @Override public void onClick(DialogInterface dialog, int which) {
                             Map<String, Object> room = rooms.get(which);
-                            if (Json.number(room, "public") > 0) Online.enterPublic(activity);
-                            else Online.joinRoom(activity, room);
+                            Online.joinRoom(activity, room);
                         }
                     });
                 }
