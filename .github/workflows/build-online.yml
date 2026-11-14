@@ -19,6 +19,7 @@ jobs:
     timeout-minutes: 20
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
       BASE: XHYN-V-0.3-Preview2-zh-CN.apk
     steps:
       - uses: actions/checkout@v4
@@ -51,9 +52,11 @@ jobs:
           tail -n 30 "$T/log.txt"
           cd "$T"
           sha256sum "$APK" > SHA256SUMS.txt
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$APK" SHA256SUMS.txt --clobber
-          else
-            gh release create "$TAG" "$APK" SHA256SUMS.txt --target "$GITHUB_SHA" --prerelease \
-              --title "小春GTA5Online · 汉化 + 联机中心（测试版 $N）" --notes-file "$GITHUB_WORKSPACE/$NOTES"
-          fi
+          {
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              gh release upload "$TAG" "$APK" SHA256SUMS.txt --clobber
+            else
+              gh release create "$TAG" "$APK" SHA256SUMS.txt --target "$GITHUB_SHA" --prerelease \
+                --title "小春GTA5Online · 汉化 + 联机中心（测试版 $N）" --notes-file "$GITHUB_WORKSPACE/$NOTES"
+            fi
+          } > "$T/log.txt" 2>&1 || fail "could not publish the release"
