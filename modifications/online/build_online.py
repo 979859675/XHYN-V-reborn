@@ -21,6 +21,9 @@ APP_NAME = '星战GTA5Online'
 OLD_NAME = 'XHYN V'
 # The application id. The resource table keeps the old name, which the game's own AppResources already allows for.
 PACKAGE = 'cn.xzcqgzs.zy'
+# The About page shows the name and these two lines, nothing else.
+SITE = 'https://zy.xzcqgzs.cn/'
+QQ_GROUP = '942876882'
 OLD_PACKAGE = 'com.xhynph.xhynv.reborn174'
 # The released zh-CN build: the original APK with only the translation applied.
 ZH_SHA256 = '8817ffed1f2e8a41fb0d7bbd373b45f71f6edbf44f03b66914a9f1075d0ebfd4'
@@ -136,6 +139,34 @@ def chinese_engine(data):
     return bytes(out)
 
 
+def about_page(text):
+    """Cut the About page down to the name, the QQ group and one row opening the site."""
+    start = text.index('.method public static render(Lcom/gtavsource/android/GameMenuActivity;)V')
+    end = text.index('.end method', start)
+    body = text[start:end]
+    quote = lambda value: '"' + build_zh.escape(value) + '"'
+
+    def swap(pattern, value, source):
+        result, count = re.subn(pattern, lambda m: m[1] + quote(value), source)
+        assert count == 1, 'About page differs at ' + pattern
+        return result
+
+    body = swap(r'(const-string v1, )"XHYN V 0\.3 Preview 2[^"\n]*"', APP_NAME, body)
+    # The description is the string loaded right after the heading.
+    body = swap(r'(MenuStyle;->heading\(.*?const-string v1, )"(?:[^"\\\n]|\\.)*"', 'QQ\u7fa4\uff1a' + QQ_GROUP, body.replace('\n', '\0')).replace('\0', '\n')
+    body = swap(r'(const-string v1, )"XHYN V"', SITE.split('//')[1].strip('/'), body)
+    body = swap(r'(const-string v2, )"https://t\.me/xhynv"', SITE, body)
+    body = swap(r'(const-string v4, )"Telegram"', '\u5b98\u7f51', body)
+    # Everything after the first row, up to the return, goes.
+    first = body.index('const-string v1, "@xhyn_ph"')
+    first = body.rindex('\n', 0, first) + 1
+    last = body.rindex('return-void')
+    last = body.rindex('\n', 0, last) + 1
+    removed = body[first:last]
+    assert removed.count('XhynV02Menu;->link(') == 4 and removed.count('MenuStyle;->text(') == 1 and ':' not in re.sub(r'"(?:[^"\\]|\\.)*"', '', removed), 'About page tail differs'
+    return text[:start] + body[:first] + body[last:] + text[end:]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base-apk', required=True, type=Path)
@@ -203,14 +234,22 @@ def main():
     assert OLD_PACKAGE + '.modspawn' in text, 'provider authority not found'
     provider.write_text(text.replace(OLD_PACKAGE + '.modspawn', PACKAGE + '.modspawn'), encoding='utf-8')
     changed.add('smali_classes5')
+    about = dec / 'smali_classes11/com/gtavsource/android/XhynV02Menu.smali'
+    about.write_text(about_page(about.read_text(encoding='utf-8')), encoding='utf-8')
+    changed.add('smali_classes11')
     dictionary = json.loads((HERE.parent / 'zh-CN/dictionary.json').read_text(encoding='utf-8'))
+    payload = (json.dumps(dictionary, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
+    if translated:
+        assert zipfile.ZipFile(base).read('assets/xhyn-english.json') == payload, 'base carries a different dictionary'
+    # The launcher title and its About button come from the dictionary.
+    renamed = {key: value.replace(OLD_NAME, APP_NAME) for key, value in dictionary.items() if value in (OLD_NAME, '\u5173\u4e8e' + OLD_NAME)}
+    assert len(renamed) >= 3, 'launcher title entries not found'
+    dictionary.update(renamed)
     payload = (json.dumps(dictionary, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
     rebuilt = work / 'rebuilt.apk'
     run(args.java, '-jar', args.apktool, 'b', dec, '-o', rebuilt)
     built = zipfile.ZipFile(rebuilt)
     replace = {'assets/xhyn-english.json': payload}
-    if translated:
-        assert zipfile.ZipFile(base).read('assets/xhyn-english.json') == payload, 'base carries a different dictionary'
 
     # The launcher name sits in the binary manifest. Rebuild the manifest alone from its decoded
     # form with that one attribute changed; resources and everything else stay the base's own.
