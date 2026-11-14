@@ -19,6 +19,7 @@ const dgram = require('node:dgram');
 const HOST_IP = '10.77.0.1';
 const PREFIX = '10.77.0.';
 const BROADCASTS = new Set(['255.255.255.255', '10.77.0.255']);
+const SEAT_IDLE_MS = 60000;
 const UP_HEADER = 20, DOWN_HEADER = 10, MAX_PAYLOAD = 1400, MAX_PORTS = 4;
 
 // Replies to the phone. Same header as a forwarded packet, with a type the game socket never delivers.
@@ -50,13 +51,22 @@ function createRelay(config) {
 
   function addMember(network, userId, last) {
     const member = { network, userId, ip: PREFIX + last, token: crypto.randomBytes(8).toString('hex'),
-      endpoints: new Map(), allowance: bytesPerSecond, refilledAt: now() };
+      endpoints: new Map(), allowance: bytesPerSecond, refilledAt: now(), joinedAt: now() };
     network.members.set(userId, member);
     byToken.set(member.token, member);
     return member;
   }
 
   const describe = (member) => ({ networkId: member.network.id, token: member.token, virtualIp: member.ip, hostIp: HOST_IP, port });
+
+  const lastSeen = (member) => Math.max(member.joinedAt, ...[...member.endpoints.values()].map((e) => e.seenAt || 0));
+
+  /** Milliseconds since the owner's phone was last heard on UDP; null if it never was (or there is no network). */
+  function hostSilence(userId) {
+    const network = byOwner.get(userId);
+    const member = network && network.members.get(userId);
+    return member && member.endpoints.size ? now() - lastSeen(member) : null;
+  }
 
   /** The caller's own network, created on first use. Calling again keeps it alive and returns the same token. */
   function host(userId) {
@@ -79,6 +89,12 @@ function createRelay(config) {
     if (!network) return null;
     let member = network.members.get(userId);
     if (!member) {
+      // A long-lived room sees many players come and go: a seat whose phone has gone quiet is free again.
+      if (network.members.size >= maxMembers) {
+        for (const [id, old] of network.members) {
+          if (id !== network.ownerId && typeof id === 'number' && lastSeen(old) < now() - SEAT_IDLE_MS) { network.members.delete(id); byToken.delete(old.token); }
+        }
+      }
       if (network.members.size >= maxMembers) return 'full';
       const used = new Set([...network.members.values()].map((m) => m.ip));
       let last = 2;
@@ -224,7 +240,7 @@ function createRelay(config) {
     });
   }
 
-  return { host, join, bot, reached, networkOf, roleIn, realCount, closeFor, start, close, stats,
+  return { host, join, bot, reached, networkOf, roleIn, realCount, hostSilence, closeFor, start, close, stats,
     get port() { return port; }, get networks() { return networks.size; }, HOST_IP };
 }
 

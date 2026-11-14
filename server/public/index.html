@@ -43,7 +43,7 @@
   <main>
     <section id="view-rooms" class="view">
       <div class="row-head"><h2>在线房间</h2><button class="ghost" id="rooms-refresh">刷新</button></div>
-      <p class="hint">房主在游戏里创建房间后会显示在这里。把房主 IP 和房间码填进游戏的“加入房间”即可。标着“虚拟局域网”的房间需要先连上同一个组网。</p>
+      <p class="hint">“公共对战房”一直开放：在手机联机页点“公共对战房”即可进入，没人时第一个进的人自动当房主。房主在游戏里创建的房间也会显示在这里。把房主 IP 和房间码填进游戏的“加入房间”即可。标着“虚拟局域网”的房间需要先连上同一个组网。</p>
       <div id="rooms" class="list"></div>
     </section>
 
@@ -61,7 +61,11 @@
     <section id="view-board" class="view" hidden>
       <h2>排行榜</h2>
       <p class="hint">按街头赛车胜场排序（至少 2 人参赛才算胜场）。赛车成绩由房主的游戏上报，团队竞技战绩由每位玩家的游戏上报，仅供娱乐。</p>
-      <div class="table-wrap"><table id="board"><thead><tr><th>#</th><th>角色</th><th class="num">赛车胜场</th><th class="num">完赛</th><th class="num">参赛</th><th class="num">团队竞技胜场</th><th class="num">团队竞技场次</th><th class="num">击杀</th><th class="num">阵亡</th><th class="num">在线时长</th></tr></thead><tbody></tbody></table></div>
+      <h3>个人对战榜（公共对战房）</h3>
+      <div class="ranges" id="ffa-ranges"><button class="ghost on" data-range="day">今日</button><button class="ghost" data-range="week">本周</button><button class="ghost" data-range="all">总榜</button></div>
+      <div class="table-wrap"><table id="ffa-board"><thead><tr><th>#</th><th>角色</th><th class="num">击杀</th><th class="num">阵亡</th></tr></thead><tbody></tbody></table></div>
+      <h3>综合榜</h3>
+      <div class="table-wrap"><table id="board"><thead><tr><th>#</th><th>角色</th><th class="num">赛车胜场</th><th class="num">完赛</th><th class="num">参赛</th><th class="num">团队竞技胜场</th><th class="num">团队竞技场次</th><th class="num">击杀</th><th class="num">阵亡</th><th class="num">个人对战击杀</th><th class="num">个人对战阵亡</th><th class="num">在线时长</th></tr></thead><tbody></tbody></table></div>
     </section>
 
     <section id="view-races" class="view" hidden>
@@ -86,6 +90,11 @@
       <h2>用户管理</h2>
       <p class="hint">“重置密码”用于帮忘记密码的用户设一个新密码，对方在所有设备上的登录会失效。改自己的密码请到“账号”页。</p>
       <div class="table-wrap"><table id="users"><thead><tr><th>ID</th><th>用户名</th><th>注册时间</th><th>最近登录</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="row-head"><h2>个人对战记录</h2><button class="danger" id="ffa-reset-all">全部清零</button></div>
+      <p class="hint">公共对战房里的累计战绩。每一次阵亡记一条；没有击杀者的是摔死、被警察打死等。</p>
+      <div class="table-wrap"><table id="ffa-players"><thead><tr><th>角色</th><th class="num">累计击杀</th><th class="num">累计阵亡</th><th class="num">今日击杀</th><th>最近参战</th><th></th></tr></thead><tbody></tbody></table></div>
+      <h3>最近 200 条击杀明细</h3>
+      <div class="table-wrap"><table id="ffa-kills"><thead><tr><th>时间</th><th>房间</th><th>击杀者</th><th>阵亡者</th></tr></thead><tbody></tbody></table></div>
     </section>
   </main>
 </div>

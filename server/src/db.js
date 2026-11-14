@@ -96,6 +96,16 @@ const TABLES = (pk) => [
     deaths INTEGER NOT NULL DEFAULT 0,
     won INTEGER NOT NULL DEFAULT 0
   )`,
+  // One row per death in a public free-for-all room; the boards are sums over a time range.
+  `CREATE TABLE IF NOT EXISTS ffa_kills (
+    id ${pk},
+    at BIGINT NOT NULL,
+    room INTEGER NOT NULL DEFAULT 1,
+    killer_character_id BIGINT NULL,
+    killer_name VARCHAR(32) NOT NULL DEFAULT '',
+    victim_character_id BIGINT NULL,
+    victim_name VARCHAR(32) NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS saves (
     character_id BIGINT PRIMARY KEY,
     size BIGINT NOT NULL,
@@ -111,6 +121,7 @@ const INDEXES = [
   ['idx_results_character', 'race_results(character_id)'],
   ['idx_dm_players_match', 'dm_players(match_id)'],
   ['idx_dm_players_character', 'dm_players(character_id)'],
+  ['idx_ffa_kills_at', 'ffa_kills(at)'],
 ];
 
 async function openSqlite(config) {

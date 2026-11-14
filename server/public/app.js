@@ -102,7 +102,7 @@
   $('logout').addEventListener('click', async () => { try { await api('POST', '/auth/logout'); } catch { /* token is dropped locally anyway */ } signOut(); });
 
   // ---- views ----------------------------------------------------------------
-  const loaders = { rooms: loadRooms, characters: loadCharacters, board: loadBoard, races: loadRaces, account: async () => {}, admin: loadUsers };
+  const loaders = { rooms: loadRooms, characters: loadCharacters, board: loadBoard, races: loadRaces, account: async () => {}, admin: async () => { await loadUsers(); await loadFfaAdmin(); } };
   function open(view) {
     for (const button of $('tabs').children) button.classList.toggle('on', button.dataset.view === view);
     for (const section of document.querySelectorAll('.view')) section.hidden = section.id !== `view-${view}`;
@@ -117,7 +117,7 @@
     const box = el('div', { class: 'sub' },
       `团队竞技（${STATES[match.state] || match.state}）：红队 ${match.red} : ${match.blue} 蓝队 · 目标 ${match.target} · 击倒人机需命中 ${match.botHits} 次 · ${match.record ? '记录战绩' : '本场不记录'}`);
     for (const team of ['red', 'blue']) {
-      const line = el('div', {}, `${team === 'red' ? '红队' : '蓝队'}：`);
+      const line = el('div', {}, el('span', { class: team }, team === 'red' ? '红队' : '蓝队'), '：');
       const players = match.players.filter((p) => p.team === team);
       if (!players.length) line.append('（空）');
       for (const p of players) {
@@ -132,12 +132,16 @@
   }
 
   async function loadRooms() {
-    const { rooms } = await api('GET', '/rooms');
+    const { rooms, publicOpen } = await api('GET', '/rooms');
     const list = $('rooms');
     list.replaceChildren();
-    if (!rooms.length) return list.append(empty('现在没有在线房间。在游戏里创建房间后，它会出现在这里。'));
+    if (!publicOpen) list.append(el('div', { class: 'item' }, el('div', { class: 'grow' },
+      el('div', { class: 'title' }, '公共对战房 1', el('span', { class: 'tag on' }, '个人对战'), el('span', { class: 'tag' }, '常驻')),
+      el('div', { class: 'sub' }, '现在里面没有人。在手机联机页点“公共对战房”进入，第一个进的人自动当房主。'))));
+    if (!rooms.length) list.append(empty('现在没有其他在线房间。在游戏里创建房间后，它会出现在这里。'));
     for (const room of rooms) {
       const title = el('div', { class: 'title' }, room.title);
+      if (room.public) title.append(el('span', { class: 'tag on' }, '个人对战'), el('span', { class: 'tag' }, '常驻'));
       if (room.virtualLan) title.append(el('span', { class: 'tag warn' }, '虚拟局域网'));
       if (room.players >= room.maxPlayers) title.append(el('span', { class: 'tag bad' }, '已满'));
       if (room.relayNetwork) title.append(el('span', { class: 'tag' }, '公网联机'));
@@ -147,7 +151,7 @@
         await api('POST', `/rooms/${room.id}/bots`, { count, mirror }); await loadRooms();
         toast('已设置。房主手机会在 10 秒内照做（需要新版客户端）');
       });
-      const botButtons = (user.isAdmin || room.debug !== undefined) && room.relayNetwork ? [
+      const botButtons = (user.isAdmin || room.debug !== undefined) && room.relayNetwork && !room.public ? [
         el('button', { class: 'ghost', onclick: setBots(Math.min(9, room.bots + 1), room.botMirror) }, '加人机'),
         el('button', { class: 'ghost', onclick: (e) => act(e.target, async () => {
           await api('POST', `/rooms/${room.id}/bots`, { fill: true, mirror: room.botMirror }); await loadRooms();
@@ -165,6 +169,8 @@
           ...(room.relayReached === false ? [el('div', { class: 'sub' }, `中转：服务器还没有收到房主手机的 UDP 数据，别人和人机都进不来。服务器累计收到 UDP 包 ${(info.relayStats || {}).received ?? '?'} 个，其中令牌不认识的 ${(info.relayStats || {}).unknown ?? '?'} 个。收到 0 个 = 包没到服务器（防火墙/安全组没放行 UDP ${info.relayPort || 27950}、域名套了 CDN、或手机网络拦 UDP）；有“不认识的” = 服务器重启过，手机上重开游戏再建房。`)] : []),
           ...(room.relayReached === true ? [el('div', { class: 'sub' }, '中转：UDP 通畅')] : []),
           ...(room.debug ? [el('div', { class: 'sub' }, `诊断：${room.debug}`)] : []),
+          ...(room.ffa && room.ffa.players.length ? [el('div', { class: 'sub' },
+            `个人对战：${room.ffa.players.map((p) => `${p.name}（击杀 ${p.kills} / 阵亡 ${p.deaths}）`).join('　')}`)] : []),
           ...(room.match ? [matchBox(room)] : [])),
         el('div', { class: 'join' },
           el('div', {}, el('small', {}, '房主 IP'), el('b', {}, room.hostAddress)),
@@ -210,17 +216,35 @@
     });
   });
 
+  let ffaRange = 'day';
+  async function loadFfaBoard() {
+    const { board } = await api('GET', `/ffa/board?range=${ffaRange}`);
+    for (const button of $('ffa-ranges').children) button.classList.toggle('on', button.dataset.range === ffaRange);
+    const body = $('ffa-board').tBodies[0];
+    body.replaceChildren();
+    if (!board.length) return body.append(el('tr', {}, el('td', { colspan: '4', class: 'sub' }, '这个时间段还没有人上榜。去公共对战房打一场吧。')));
+    board.forEach((row, index) => body.append(el('tr', {}, el('td', {}, String(index + 1)), el('td', {}, row.name),
+      el('td', { class: 'num' }, String(row.kills)), el('td', { class: 'num' }, String(row.deaths)))));
+  }
+  $('ffa-ranges').addEventListener('click', (event) => {
+    if (!event.target.dataset.range) return;
+    ffaRange = event.target.dataset.range;
+    act(event.target, loadFfaBoard);
+  });
+
   async function loadBoard() {
+    await loadFfaBoard();
     const { leaderboard } = await api('GET', '/leaderboard');
     const body = $('board').tBodies[0];
     body.replaceChildren();
-    if (!leaderboard.length) return body.append(el('tr', {}, el('td', { colspan: '10', class: 'sub' }, '还没有角色上榜。')));
+    if (!leaderboard.length) return body.append(el('tr', {}, el('td', { colspan: '12', class: 'sub' }, '还没有角色上榜。')));
     leaderboard.forEach((row, index) => body.append(el('tr', {},
       el('td', {}, String(index + 1)), el('td', {}, row.name),
       el('td', { class: 'num' }, String(row.wins)), el('td', { class: 'num' }, String(row.finishes)),
       el('td', { class: 'num' }, String(row.races)),
       el('td', { class: 'num' }, String(row.dmWins || 0)), el('td', { class: 'num' }, String(row.dmMatches || 0)),
       el('td', { class: 'num' }, String(row.dmKills || 0)), el('td', { class: 'num' }, String(row.dmDeaths || 0)),
+      el('td', { class: 'num' }, String(row.ffaKills || 0)), el('td', { class: 'num' }, String(row.ffaDeaths || 0)),
       el('td', { class: 'num' }, duration(row.playSeconds)))));
   }
 
@@ -234,11 +258,12 @@
     for (const match of matches) {
       const results = el('ol', { class: 'results' });
       for (const entry of match.players) results.append(el('li', {},
-        el('span', { class: 'pos' }, TEAM_NAMES[entry.team] || entry.team), el('span', {}, entry.name),
+        el('span', { class: `pos ${entry.team}` }, TEAM_NAMES[entry.team] || entry.team), el('span', { class: entry.team }, entry.name),
         el('span', { class: 'time' }, `击杀 ${entry.kills} · 阵亡 ${entry.deaths}`)));
       list.append(el('div', { class: 'item' },
         el('div', { class: 'grow' },
-          el('div', { class: 'title' }, `红队 ${match.red} : ${match.blue} 蓝队 · ${match.winner === 'draw' ? '平局' : `${TEAM_NAMES[match.winner]}获胜`}`),
+          el('div', { class: 'title' }, el('span', { class: 'red' }, `红队 ${match.red}`), ' : ', el('span', { class: 'blue' }, `${match.blue} 蓝队`),
+            ` · ${match.winner === 'draw' ? '平局' : `${TEAM_NAMES[match.winner]}获胜`}`),
           el('div', { class: 'sub' }, `房主 ${match.hostName} · 目标 ${match.target} · ${REASONS[match.reason] || match.reason} · ${when(match.endedAt)}`)),
         results));
     }
@@ -292,6 +317,29 @@
       body.append(el('tr', {}, el('td', {}, String(row.id)), name, el('td', {}, when(row.createdAt)), el('td', {}, when(row.lastLoginAt)), el('td', {}, reset, ' ', action)));
     }
   }
+
+  async function loadFfaAdmin() {
+    const { players, today, kills } = await api('GET', '/admin/ffa');
+    const todayKills = new Map(today.map((row) => [row.characterId, row.kills]));
+    const body = $('ffa-players').tBodies[0];
+    body.replaceChildren();
+    if (!players.length) body.append(el('tr', {}, el('td', { colspan: '6', class: 'sub' }, '还没有个人对战记录。')));
+    for (const row of players) body.append(el('tr', {}, el('td', {}, row.name),
+      el('td', { class: 'num' }, String(row.kills)), el('td', { class: 'num' }, String(row.deaths)),
+      el('td', { class: 'num' }, String(todayKills.get(row.characterId) || 0)), el('td', {}, when(row.lastAt)),
+      el('td', {}, el('button', { class: 'danger', onclick: (e) => act(e.target, async () => {
+        if (!confirm(`把“${row.name}”的个人对战战绩清零？无法恢复。`)) return;
+        await api('POST', '/admin/ffa/reset', { characterId: row.characterId }); toast('已清零'); await loadFfaAdmin();
+      }) }, '清零'))));
+    const log = $('ffa-kills').tBodies[0];
+    log.replaceChildren();
+    for (const row of kills) log.append(el('tr', {}, el('td', {}, when(row.at)), el('td', {}, `公共对战房 ${row.room}`),
+      el('td', {}, row.killer || '—（无人击杀）'), el('td', {}, row.victim)));
+  }
+  $('ffa-reset-all').addEventListener('click', (event) => act(event.target, async () => {
+    if (!confirm('把所有人的个人对战战绩全部清零？无法恢复。')) return;
+    await api('POST', '/admin/ffa/reset', { all: true }); toast('已全部清零'); await loadFfaAdmin();
+  }));
 
   // ---- start ----------------------------------------------------------------
   (async () => {

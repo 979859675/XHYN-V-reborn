@@ -307,18 +307,20 @@ function createApp(config, db, relay = createRelay(config)) {
   const publicRoom = (row) => ({ id: Number(row.id), title: row.title, hostName: row.host_name, hostAddress: row.host_address,
     roomCode: row.room_code, virtualLan: !!row.virtual_lan, maxPlayers: Number(row.max_players), players: Number(row.players),
     gameVersion: row.game_version, createdAt: Number(row.created_at),
-    relayNetwork: row.host_address === HOST_IP ? relay.networkOf(Number(row.user_id)) : null });
+    relayNetwork: row.host_address === HOST_IP ? relay.networkOf(Number(row.user_id)) : null,
+    public: extra(row.id).public || 0 });
   const freshSince = () => now() - config.roomTimeoutSeconds;
   // Test bots asked for and the host's last diagnostic line, per room. Not worth a schema change: both are
   // only meaningful while the room is live, and the host re-reads them on every heartbeat.
   const MAX_BOTS = 9;
   const extras = new Map();
-  const extra = (id) => extras.get(Number(id)) || { bots: 0, mirror: false, debug: '' };
+  const extra = (id) => extras.get(Number(id)) || { bots: 0, mirror: false, debug: '', public: 0 };
   const roomFor = (row, viewer) => {
     const more = extra(row.id);
     const room = { ...publicRoom(row), bots: more.bots, botMirror: more.mirror };
     if (viewer.is_admin || Number(row.user_id) === Number(viewer.id)) {
       if (room.relayNetwork) room.match = publicMatch(matches.get(room.relayNetwork));
+      if (room.public && room.relayNetwork) room.ffa = publicArena(arenas.get(room.relayNetwork), 0);
       room.debug = more.debug;
       // Rooms are listed over HTTPS; the game itself needs the UDP port. Say whether that part works.
       if (room.relayNetwork) room.relayReached = relay.reached(Number(row.user_id));
@@ -331,7 +333,9 @@ function createApp(config, db, relay = createRelay(config)) {
     const rows = await db.all('SELECT * FROM rooms ORDER BY created_at DESC LIMIT 100');
     const live = new Set(rows.map((row) => Number(row.id)));
     for (const id of extras.keys()) if (!live.has(id)) extras.delete(id);
-    res.json({ rooms: rows.map((row) => roomFor(row, req.user)) });
+    // The public free-for-all rooms come first; "publicOpen" is false when nobody is hosting one right now.
+    const rooms = rows.map((row) => roomFor(row, req.user)).sort((a, b) => (a.public || 99) - (b.public || 99));
+    res.json({ rooms, publicOpen: rooms.some((room) => room.public) });
   }));
 
   // Creating a room replaces the caller's previous one: a phone hosts one room.
@@ -349,6 +353,11 @@ function createApp(config, db, relay = createRelay(config)) {
       whole(body.maxPlayers ?? 10, '人数上限', 2, 10),
       String(body.gameVersion || '').slice(0, 32),
     ];
+    // The room of someone who was just told to open the public room is that public room.
+    const promised = pendingHosts.get(Number(req.user.id));
+    pendingHosts.delete(Number(req.user.id));
+    const number = body.public && promised && promised.until >= now() && values[2] === HOST_IP ? promised.number : 0;
+    if (number) { values[1] = publicTitle(number); values[5] = 10; }
     const stamp = now();
     const id = await db.tx(async (tx) => {
       await tx.run('DELETE FROM rooms WHERE user_id = ?', [req.user.id]);
@@ -357,6 +366,7 @@ function createApp(config, db, relay = createRelay(config)) {
         [req.user.id, ...values, stamp, stamp]);
       return result.insertId;
     });
+    if (number) extras.set(id, { ...extra(id), public: number });
     res.status(201).json({ room: publicRoom(await db.get('SELECT * FROM rooms WHERE id = ?', [id])), heartbeatSeconds: 10 });
   }));
 
@@ -379,12 +389,56 @@ function createApp(config, db, relay = createRelay(config)) {
     if (!row) throw new ApiError(404, 'not_found', '房间不存在或已过期');
     if (!req.user.is_admin && Number(row.user_id) !== Number(req.user.id)) throw new ApiError(403, 'forbidden', '只有房主或管理员可以设置人机');
     if (row.host_address !== HOST_IP) throw bad('只有用“公网联机”创建的房间可以加人机', 'not_relayed');
+    if (extra(id).public) throw bad('公共对战房不能加人机', 'public_room');
     // "fill" asks for as many bots as there are free seats.
     const count = req.body.fill
       ? Math.max(0, Math.min(MAX_BOTS, Number(row.max_players) - Math.max(1, relay.realCount(Number(row.user_id)))))
       : whole(req.body.count, '人机数量', 0, MAX_BOTS);
     extras.set(id, { ...extra(id), bots: count, mirror: !!req.body.mirror });
     res.json({ room: roomFor(row, req.user) });
+  }));
+
+  // ---- public free-for-all rooms ("公共对战房") -----------------------------------
+  // The game needs a phone as the host, so a room that is "always open" works like this: whoever
+  // enters while nobody hosts becomes the host, everyone else joins that room, and when the host
+  // leaves the others come back here and the first of them takes over. A full room opens the next one.
+  const pendingHosts = new Map();   // user id -> { number, until }: told to host, room not listed yet
+  const publicTitle = (number) => `公共对战房 ${number}`;
+  /** Whether the host of this room is still there: listed recently and, once heard on UDP, not silent. */
+  const hostAlive = (row) => {
+    if (!row || Number(row.heartbeat_at) < freshSince() || !relay.networkOf(Number(row.user_id))) return false;
+    const silence = relay.hostSilence(Number(row.user_id));
+    return silence == null || silence < 35000;
+  };
+  async function publicRows() {
+    const rows = await db.all('SELECT * FROM rooms WHERE heartbeat_at >= ? ORDER BY id', [freshSince()]);
+    return rows.filter((row) => extra(row.id).public && row.host_address === HOST_IP)
+      .sort((a, b) => extra(a.id).public - extra(b.id).public);
+  }
+  /** The live public room behind a relay network, or null. */
+  async function publicRoomOf(networkId) {
+    for (const row of await publicRows()) if (relay.networkOf(Number(row.user_id)) === networkId) return row;
+    return null;
+  }
+
+  api.post('/public/enter', authed(async (req, res) => {
+    relayReady();
+    if (req.user.active_character_id == null) throw bad('请先创建并选择角色', 'no_character');
+    const me = Number(req.user.id);
+    const rows = await publicRows();
+    for (const [id, entry] of pendingHosts) if (entry.until < now()) pendingHosts.delete(id);
+    for (const row of rows) {
+      if (Number(row.user_id) === me || !hostAlive(row)) continue;
+      if (Number(row.players) < Number(row.max_players)) return res.json({ action: 'join', number: extra(row.id).public, room: publicRoom(row) });
+    }
+    const taken = new Set([...rows.filter((row) => Number(row.user_id) !== me && hostAlive(row)).map((row) => extra(row.id).public),
+      ...[...pendingHosts].filter(([id]) => id !== me).map(([, entry]) => entry.number)]);
+    // Someone else is opening a room at this moment: wait for it rather than opening a second one.
+    if ([...pendingHosts.keys()].some((id) => id !== me)) return res.json({ action: 'wait', seconds: 3 });
+    let number = 1;
+    while (taken.has(number)) number++;
+    pendingHosts.set(me, { number, until: now() + 60 });
+    res.json({ action: 'host', number, title: publicTitle(number) });
   }));
 
   api.delete('/rooms/:id', authed(async (req, res) => {
@@ -450,7 +504,7 @@ function createApp(config, db, relay = createRelay(config)) {
     FROM characters c LEFT JOIN race_results rr ON rr.character_id = c.id LEFT JOIN races r ON r.id = rr.race_id`;
   const publicStats = (row) => ({ id: Number(row.id), name: row.name, model: row.model, playSeconds: Number(row.play_seconds),
     races: Number(row.races), finishes: Number(row.finishes), wins: Number(row.wins),
-    dmMatches: 0, dmWins: 0, dmKills: 0, dmDeaths: 0 });
+    dmMatches: 0, dmWins: 0, dmKills: 0, dmDeaths: 0, ffaKills: 0, ffaDeaths: 0 });
   /** Adds each character's team deathmatch totals to its statistics row. */
   async function withDeathmatch(stats) {
     const rows = await db.all(`SELECT character_id, COUNT(*) AS matches, COALESCE(SUM(won), 0) AS wins,
@@ -459,6 +513,11 @@ function createApp(config, db, relay = createRelay(config)) {
     for (const entry of stats) {
       const row = byId.get(entry.id);
       if (row) Object.assign(entry, { dmMatches: Number(row.matches), dmWins: Number(row.wins), dmKills: Number(row.kills), dmDeaths: Number(row.deaths) });
+    }
+    const ffa = new Map((await ffaTotals(0)).map((row) => [row.characterId, row]));
+    for (const entry of stats) {
+      const row = ffa.get(entry.id);
+      if (row) Object.assign(entry, { ffaKills: row.kills, ffaDeaths: row.deaths });
     }
     return stats;
   }
@@ -618,7 +677,8 @@ function createApp(config, db, relay = createRelay(config)) {
     if (context.host && Array.isArray(req.body.bots)) syncBots(context.match, req.body.bots);
     await noteClient(req, context.match);
     await handler(req, context);
-    res.json({ host: context.host, userId: Number(req.user.id), match: publicMatch(await settle(context.networkId)) });
+    const room = await publicRoomOf(context.networkId);
+    res.json({ host: context.host, userId: Number(req.user.id), public: room ? extra(room.id).public : 0, match: publicMatch(await settle(context.networkId)) });
   });
 
   api.post('/match/state', match(async () => {}));
@@ -626,6 +686,7 @@ function createApp(config, db, relay = createRelay(config)) {
   // Creating replaces a match that is not being played.
   api.post('/match/create', match(async (req, context) => {
     hostOnly(context);
+    if (await publicRoomOf(context.networkId)) throw new ApiError(409, 'public_room', '公共对战房只有个人对战，不能开团队竞技');
     if (context.match && context.match.state === 'running') throw new ApiError(409, 'running', '团队竞技正在进行，请先结束');
     const character = req.user.active_character_id == null ? null : await db.get('SELECT name FROM characters WHERE id = ?', [req.user.active_character_id]);
     const created = { state: 'lobby', hostId: Number(req.user.id), hostName: character ? character.name : req.user.username,
@@ -700,6 +761,118 @@ function createApp(config, db, relay = createRelay(config)) {
     victim.hit = null;
     await kill(current, victim, killer && killer.team ? killer : null);
     res.json({ match: publicMatch(current) });
+  }));
+
+  // ---- free-for-all ("个人对战") in the public rooms --------------------------------
+  // No teams and no end: every death is stored, with the last player to damage the victim as the
+  // killer. A death nobody caused (a fall, the police) counts for the victim only.
+  const arenas = new Map();   // network id -> { number, players: Map(user id -> player), feed }
+  const dayOffset = (config.boardUtcOffsetHours ?? 8) * 3600;
+  /** Start of today, of this week (Monday) and of everything, in the boards' time zone. */
+  function since(range) {
+    const today = Math.floor((now() + dayOffset) / 86400) * 86400 - dayOffset;
+    if (range === 'day') return today;
+    if (range === 'week') return today - ((Math.floor((now() + dayOffset) / 86400) + 3) % 7) * 86400;   // day 0 was a Thursday
+    return 0;
+  }
+  async function ffaTotals(from, characterId) {
+    const one = characterId == null ? '' : ' AND %s = ?';
+    const params = characterId == null ? [from] : [from, characterId];
+    const kills = await db.all(`SELECT killer_character_id AS id, MAX(killer_name) AS name, COUNT(*) AS n, MAX(at) AS last FROM ffa_kills WHERE at >= ? AND killer_character_id IS NOT NULL${one.replace('%s', 'killer_character_id')} GROUP BY killer_character_id`, params);
+    const deaths = await db.all(`SELECT victim_character_id AS id, MAX(victim_name) AS name, COUNT(*) AS n, MAX(at) AS last FROM ffa_kills WHERE at >= ? AND victim_character_id IS NOT NULL${one.replace('%s', 'victim_character_id')} GROUP BY victim_character_id`, params);
+    const byId = new Map();
+    const row = (r) => byId.get(Number(r.id)) || byId.set(Number(r.id), { characterId: Number(r.id), name: r.name, kills: 0, deaths: 0, lastAt: 0 }).get(Number(r.id));
+    for (const r of kills) { const entry = row(r); entry.kills = Number(r.n); entry.lastAt = Math.max(entry.lastAt, Number(r.last)); }
+    for (const r of deaths) { const entry = row(r); entry.deaths = Number(r.n); entry.lastAt = Math.max(entry.lastAt, Number(r.last)); }
+    return [...byId.values()].sort((a, b) => b.kills - a.kills || a.deaths - b.deaths || a.characterId - b.characterId);
+  }
+  function publicArena(arena, viewer) {
+    if (!arena) return { players: [], feed: [] };
+    const present = [...arena.players.values()].filter((p) => now() - p.seenAt <= 30);
+    return { players: present.sort((a, b) => b.kills - a.kills || a.deaths - b.deaths)
+        .map((p) => ({ userId: p.userId, name: p.name, kills: p.kills, deaths: p.deaths, me: p.userId === viewer })),
+      feed: arena.feed.slice(-5).map((f) => ({ at: f.at, victim: f.victim, killer: f.killer })) };
+  }
+  async function ffaCredit(death, killer, victim) {
+    if (!killer || killer === victim || death.killer) return;
+    death.killer = killer.name;
+    killer.kills++; killer.total.kills++;
+    await db.run('UPDATE ffa_kills SET killer_character_id = ?, killer_name = ? WHERE id = ?', [killer.characterId, killer.name, death.id]);
+  }
+
+  // One call does everything a phone needs: says it is here, reports who it damaged and whether it
+  // just died, and gets the room's standing back. "alive" false tells a member the host has gone.
+  api.post('/ffa/state', authed(async (req, res) => {
+    const networkId = whole(req.body.networkId, '中转网络', 1, Number.MAX_SAFE_INTEGER);
+    const me = Number(req.user.id);
+    const role = relay.roleIn(networkId, me);
+    if (!role) throw new ApiError(403, 'not_in_room', '你不在这个公网联机房间里');
+    const room = await publicRoomOf(networkId);
+    if (!room) {
+      // Not listed (yet, or any more). For a room that was public this means its host has left.
+      if (!arenas.has(networkId)) throw new ApiError(404, 'not_public', '这不是公共对战房');
+      return res.json({ public: arenas.get(networkId).number, host: role === 'host', alive: false, userId: me, ...publicArena(arenas.get(networkId), me) });
+    }
+    for (const [id, old] of arenas) if (now() - old.touchedAt > 3600) arenas.delete(id);
+    let arena = arenas.get(networkId);
+    if (!arena) { arena = { number: extra(room.id).public, players: new Map(), feed: [] }; arenas.set(networkId, arena); }
+    arena.touchedAt = now();
+    let player = arena.players.get(me);
+    if (!player || player.characterId !== Number(req.user.active_character_id)) {
+      const character = req.user.active_character_id == null ? null : await db.get('SELECT id, name FROM characters WHERE id = ?', [req.user.active_character_id]);
+      if (!character) throw bad('请先创建并选择角色', 'no_character');
+      const [total] = await ffaTotals(0, Number(character.id));
+      player = { userId: me, characterId: Number(character.id), name: character.name, slot: 0, kills: 0, deaths: 0, diedAt: 0, hit: null, death: null, seenAt: 0,
+        total: { kills: total ? total.kills : 0, deaths: total ? total.deaths : 0 } };
+      arena.players.set(me, player);
+    }
+    player.seenAt = now();
+    if (Number.isInteger(req.body.slot) && req.body.slot >= 1 && req.body.slot <= 10) player.slot = req.body.slot;
+    if (Array.isArray(req.body.hits)) {
+      for (const slot of req.body.hits.slice(0, 10)) {
+        const victim = [...arena.players.values()].find((p) => p.slot === slot && p !== player && now() - p.seenAt <= 30);
+        if (!victim) continue;
+        if (victim.death && now() - victim.death.at <= LATE_HIT_SECONDS) await ffaCredit(victim.death, player, victim);
+        else victim.hit = { by: me, at: now() };
+      }
+    }
+    if (req.body.death && now() - player.diedAt >= RESPAWN_SECONDS) {      // one death per respawn
+      player.diedAt = now();
+      player.deaths++; player.total.deaths++;
+      const saved = await db.run('INSERT INTO ffa_kills (at, room, killer_character_id, killer_name, victim_character_id, victim_name) VALUES (?, ?, NULL, ?, ?, ?)',
+        [now(), arena.number, '', player.characterId, player.name]);
+      player.death = { id: saved.insertId, at: now(), victim: player.name, killer: '' };
+      arena.feed.push(player.death);
+      if (arena.feed.length > 20) arena.feed.shift();
+      if (player.hit && now() - player.hit.at <= HIT_SECONDS) await ffaCredit(player.death, arena.players.get(player.hit.by), player);
+      player.hit = null;
+    }
+    res.json({ public: arena.number, host: role === 'host', alive: hostAlive(room), userId: me,
+      me: { kills: player.kills, deaths: player.deaths, totalKills: player.total.kills, totalDeaths: player.total.deaths },
+      ...publicArena(arena, me) });
+  }));
+
+  api.get('/ffa/board', route(async (req, res) => {
+    const range = ['day', 'week', 'all'].includes(req.query.range) ? req.query.range : 'all';
+    res.json({ range, since: since(range), board: (await ffaTotals(since(range))).slice(0, 50) });
+  }));
+
+  api.get('/admin/ffa', admin(async (_req, res) => {
+    const rows = await db.all('SELECT * FROM ffa_kills ORDER BY id DESC LIMIT 200');
+    res.json({ players: await ffaTotals(0), today: await ffaTotals(since('day')),
+      kills: rows.map((r) => ({ id: Number(r.id), at: Number(r.at), room: Number(r.room), killer: r.killer_name, victim: r.victim_name })) });
+  }));
+
+  // Clears one character's free-for-all record (kills and deaths), or everything.
+  api.post('/admin/ffa/reset', admin(async (req, res) => {
+    let result;
+    if (req.body.all === true) result = await db.run('DELETE FROM ffa_kills');
+    else {
+      const id = whole(req.body.characterId, '角色', 1, Number.MAX_SAFE_INTEGER);
+      result = await db.run('DELETE FROM ffa_kills WHERE killer_character_id = ? OR victim_character_id = ?', [id, id]);
+    }
+    for (const arena of arenas.values()) arena.players.clear();
+    res.json({ ok: true, removed: result.changes });
   }));
 
   api.get('/matches', authed(async (_req, res) => {

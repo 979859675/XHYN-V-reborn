@@ -321,3 +321,77 @@ test('team deathmatch with bots: they fill the smaller team, go down after enoug
   const before = (await call('GET', '/api/matches', admin)).data.matches.filter((m) => m.hostName === 'tdmhostC');
   assert.equal(before.length, 0, 'a match marked as not recorded is not stored');
 });
+
+test('public free-for-all room: first in hosts, others join, kills are stored and ranked', async () => {
+  const a = await player('pubone');
+  const b = await player('pubtwo');
+  const c = await player('pubthree');
+  const admin = await player('pubadmin');
+  await db.run("UPDATE users SET is_admin = 1 WHERE username = 'pubadmin'");
+  const enter = (token) => call('POST', '/api/public/enter', token, {});
+
+  const first = await enter(a);
+  assert.equal(first.data.action, 'host');
+  assert.equal(first.data.number, 1);
+  assert.equal((await enter(b)).data.action, 'wait', 'nobody opens a second room while the first is being opened');
+  const net = (await call('POST', '/api/relay/host', a, {})).data.relay;
+  const room = (await call('POST', '/api/rooms', a, { hostAddress: '10.77.0.1', roomCode: '654321', public: true })).data.room;
+  assert.equal(room.public, 1);
+  assert.equal(room.title, '公共对战房 1');
+  // A room made without the promise is an ordinary one.
+  assert.equal((await call('POST', '/api/rooms', c, { hostAddress: '10.77.0.1', roomCode: '111111', public: true })).data.room.public, 0);
+  await call('DELETE', `/api/rooms/${(await call('GET', '/api/rooms', c)).data.rooms.find((r) => r.hostName === 'pubthreeC').id}`, c);
+
+  const second = await enter(b);
+  assert.equal(second.data.action, 'join');
+  assert.equal(second.data.room.id, room.id);
+  assert.equal((await call('POST', `/api/rooms/${room.id}/bots`, a, { count: 1 })).status, 400, 'no bots in the public room');
+  const list = (await call('GET', '/api/rooms', b)).data;
+  assert.equal(list.publicOpen, true);
+  assert.equal(list.rooms[0].id, room.id, 'public rooms are listed first');
+
+  const state = (token, extra = {}) => call('POST', '/api/ffa/state', token, { networkId: net.networkId, ...extra });
+  assert.equal((await state(b)).status, 403, 'not in the room yet');
+  await call('POST', '/api/relay/join', b, { networkId: net.networkId });
+  await call('POST', '/api/relay/join', c, { networkId: net.networkId });
+  assert.equal((await call('POST', '/api/match/create', a, { networkId: net.networkId })).status, 409, 'no team match in the public room');
+  assert.equal((await call('POST', '/api/match/state', b, { networkId: net.networkId })).data.public, 1);
+  const hosted = await state(a, { slot: 1 });
+  assert.equal(hosted.data.host, true);
+  assert.equal(hosted.data.alive, true);
+  await state(b, { slot: 2 });
+  await state(c, { slot: 3 });
+
+  // b damages a, a dies: b's kill. c dies alone: nobody's kill.
+  await state(b, { slot: 2, hits: [1] });
+  const died = await state(a, { slot: 1, death: true });
+  assert.equal(died.data.me.deaths, 1);
+  assert.deepEqual(died.data.feed.map((f) => [f.killer, f.victim]), [['pubtwoC', 'puboneC']]);
+  assert.equal((await state(a, { slot: 1, death: true })).data.me.deaths, 1, 'one death per respawn');
+  await state(c, { slot: 3, death: true });
+  // Damage reported just after the death still counts for it.
+  const late = await state(a, { slot: 1, hits: [3] });
+  assert.deepEqual(late.data.players.map((p) => [p.name, p.kills, p.deaths]), [['pubtwoC', 1, 0], ['puboneC', 1, 1], ['pubthreeC', 0, 1]]);
+  assert.equal(late.data.me.totalKills, 1);
+
+  for (const range of ['day', 'week', 'all']) {
+    const board = (await call('GET', `/api/ffa/board?range=${range}`, a)).data;
+    assert.deepEqual(board.board.map((r) => [r.name, r.kills, r.deaths]), [['pubtwoC', 1, 0], ['puboneC', 1, 1], ['pubthreeC', 0, 1]], range);
+  }
+  assert.equal((await call('GET', '/api/leaderboard', a)).data.leaderboard.find((r) => r.name === 'pubtwoC').ffaKills, 1);
+  assert.equal((await call('GET', '/api/admin/ffa', a)).status, 403);
+  const log = (await call('GET', '/api/admin/ffa', admin)).data;
+  assert.equal(log.kills.length, 2);
+  assert.equal(log.players.length, 3);
+
+  // The host leaves: members are told, and the next one in becomes the host.
+  await call('DELETE', `/api/rooms/${room.id}`, a);
+  const gone = await state(b, { slot: 2 });
+  assert.equal(gone.data.alive, false);
+  assert.equal((await enter(b)).data.action, 'host');
+
+  const victim = log.players.find((r) => r.name === 'pubthreeC').characterId;
+  assert.equal((await call('POST', '/api/admin/ffa/reset', admin, { characterId: victim })).data.removed, 1);
+  assert.equal((await call('POST', '/api/admin/ffa/reset', admin, { all: true })).data.removed, 1);
+  assert.equal((await call('GET', '/api/ffa/board', a)).data.board.length, 0);
+});
