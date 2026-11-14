@@ -558,4 +558,34 @@ public final class OnlineUi {
         box.addView(line);
         return line;
     }
+
+    // The launcher's side bar is laid out from parallel arrays, one entry per group, ours last.
+    // These put ours first and the group that was first in its place.
+
+    public static String[] groups(String[] names) {
+        String first = names[0];
+        names[0] = names[names.length - 1];
+        names[names.length - 1] = first;
+        return names;
+    }
+
+    public static int[][] children(int[][] pages) {
+        int[] first = pages[0];
+        pages[0] = pages[pages.length - 1];
+        pages[pages.length - 1] = first;
+        return pages;
+    }
+
+    /** The page each group opens on. */
+    public static int[] pages(int[] opening) {
+        int first = opening[0];
+        opening[0] = opening[opening.length - 1];
+        opening[opening.length - 1] = first;
+        return opening;
+    }
+
+    /** The launcher draws icon 7 for the group in sixth place and icon n for place n; follow the swap. */
+    public static int icon(int type) {
+        return type == 7 ? 0 : type == 0 ? 7 : type;
+    }
 }

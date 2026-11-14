@@ -30,6 +30,20 @@ ZH_SHA256 = '8817ffed1f2e8a41fb0d7bbd373b45f71f6edbf44f03b66914a9f1075d0ebfd4'
 
 # (file, text that must occur exactly once, replacement)
 PATCHES = [
+    # The launcher's side bar follows these arrays; the online group swaps places with the first one.
+    ('smali/com/gtavsource/android/MenuPages.smali',
+     '    invoke-static {v0}, Lcom/gtavsource/android/LanPages;->groups([Ljava/lang/String;)[Ljava/lang/String;\n',
+     '    invoke-static {v0}, Lcom/gtavsource/android/LanPages;->groups([Ljava/lang/String;)[Ljava/lang/String;\n\n    move-result-object v0\n\n    invoke-static {v0}, Lcom/xhynv/online/OnlineUi;->groups([Ljava/lang/String;)[Ljava/lang/String;\n'),
+    ('smali/com/gtavsource/android/MenuPages.smali',
+     '    invoke-static {v0}, Lcom/gtavsource/android/XhynV02Menu;->children([[I)[[I\n',
+     '    invoke-static {v0}, Lcom/gtavsource/android/XhynV02Menu;->children([[I)[[I\n\n    move-result-object v0\n\n    invoke-static {v0}, Lcom/xhynv/online/OnlineUi;->children([[I)[[I\n'),
+    ('smali/com/gtavsource/android/GameMenuActivity.smali',
+     '    invoke-static {v0}, Lcom/gtavsource/android/LanPages;->defaults([I)[I\n',
+     '    invoke-static {v0}, Lcom/gtavsource/android/LanPages;->defaults([I)[I\n\n    move-result-object v0\n\n    invoke-static {v0}, Lcom/xhynv/online/OnlineUi;->pages([I)[I\n'),
+    # ... and so do their icons, which the launcher picks by position.
+    ('smali_classes10/com/gtavsource/android/LiquidLauncher.smali',
+     '    invoke-direct {v3, v13, v9}, Lcom/gtavsource/android/LiquidLauncher$Icon;-><init>(Lcom/gtavsource/android/LiquidLauncher$Root;I)V\n',
+     '    invoke-static {v9}, Lcom/xhynv/online/OnlineUi;->icon(I)I\n\n    move-result v9\n\n    invoke-direct {v3, v13, v9}, Lcom/gtavsource/android/LiquidLauncher$Icon;-><init>(Lcom/gtavsource/android/LiquidLauncher$Root;I)V\n'),
     # A LAN session may only start for a signed-in user, under the character's name. The same call
     # decides whether the session runs over the lobby server's relay.
     ('smali_classes10/com/gtavsource/android/lan/LanSession.smali',
