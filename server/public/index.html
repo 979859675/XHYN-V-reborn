@@ -61,6 +61,10 @@
     <section id="view-board" class="view" hidden>
       <h2>排行榜</h2>
       <p class="hint">按街头赛车胜场排序（至少 2 人参赛才算胜场）。赛车成绩由房主的游戏上报，团队竞技战绩由每位玩家的游戏上报，仅供娱乐。</p>
+      <h3>赛季段位榜</h3>
+      <p class="hint" id="season-info"></p>
+      <div class="table-wrap"><table id="season-board"><thead><tr><th>#</th><th>角色</th><th>段位</th><th class="num">积分</th><th class="num">击杀</th><th class="num">胜场</th></tr></thead><tbody></tbody></table></div>
+      <p class="hint" id="season-last" hidden></p>
       <h3>个人对战榜（公共对战房）</h3>
       <div class="ranges" id="ffa-ranges"><button class="ghost on" data-range="day">今日</button><button class="ghost" data-range="week">本周</button><button class="ghost" data-range="all">总榜</button></div>
       <div class="table-wrap"><table id="ffa-board"><thead><tr><th>#</th><th>角色</th><th class="num">击杀</th><th class="num">阵亡</th></tr></thead><tbody></tbody></table></div>
@@ -90,6 +94,8 @@
       <h2>用户管理</h2>
       <p class="hint">“重置密码”用于帮忘记密码的用户设一个新密码，对方在所有设备上的登录会失效。改自己的密码请到“账号”页。</p>
       <div class="table-wrap"><table id="users"><thead><tr><th>ID</th><th>用户名</th><th>注册时间</th><th>最近登录</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="row-head"><h2>赛季</h2><button class="danger" id="season-end">立即结束本赛季</button></div>
+      <p class="hint">赛季到期会自动结束并开始下一赛季，所有人的段位积分从 0 开始。这个按钮用于提前结束。</p>
       <div class="row-head"><h2>个人对战记录</h2><button class="danger" id="ffa-reset-all">全部清零</button></div>
       <p class="hint">公共对战房里的累计战绩。每一次阵亡记一条；没有击杀者的是摔死、被警察打死等。</p>
       <div class="table-wrap"><table id="ffa-players"><thead><tr><th>角色</th><th class="num">累计击杀</th><th class="num">累计阵亡</th><th class="num">今日击杀</th><th>最近参战</th><th></th></tr></thead><tbody></tbody></table></div>

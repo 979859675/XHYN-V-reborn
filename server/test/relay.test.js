@@ -54,7 +54,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
 
 before(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xhynv-relay-'));
-  const config = load({ dbDriver: 'sqlite', sqliteFile: ':memory:', dataDir, inviteCode: '', authRateLimit: 1000, apiRateLimit: 100000, relayMaxMembers: 3, relayMaxKbps: 100 });
+  const config = load({ dbDriver: 'sqlite', sqliteFile: ':memory:', dataDir, inviteCode: '', authRateLimit: 1000, apiRateLimit: 100000, relayMaxMembers: 3, relayMaxKbps: 100, ffaTarget: 6, ffaBreakSeconds: 2 });
   db = await open(config);
   relay = createRelay(config);
   relayPort = await relay.start(0, '127.0.0.1');
@@ -394,4 +394,109 @@ test('public free-for-all room: first in hosts, others join, kills are stored an
   assert.equal((await call('POST', '/api/admin/ffa/reset', admin, { characterId: victim })).data.removed, 1);
   assert.equal((await call('POST', '/api/admin/ffa/reset', admin, { all: true })).data.removed, 1);
   assert.equal((await call('GET', '/api/ffa/board', a)).data.board.length, 0);
+  // b opens the room it was promised and closes it again, so nothing is left pending.
+  await call('POST', '/api/relay/host', b, {});
+  const reopened = (await call('POST', '/api/rooms', b, { hostAddress: '10.77.0.1', roomCode: '333333', public: true })).data.room;
+  assert.equal(reopened.public, 1);
+  await call('DELETE', `/api/rooms/${reopened.id}`, b);
+});
+
+test('free-for-all rounds, kill streaks with bounties, and season rank points', async () => {
+  const a = await player('rndone'), b = await player('rndtwo'), c = await player('rndthree');
+  const admin = await player('rndadmin');
+  await db.run("UPDATE users SET is_admin = 1 WHERE username = 'rndadmin'");
+  assert.equal((await call('POST', '/api/public/enter', a, {})).data.action, 'host');
+  const net = (await call('POST', '/api/relay/host', a, {})).data.relay;
+  await call('POST', '/api/rooms', a, { hostAddress: '10.77.0.1', roomCode: '222222', public: true });
+  await call('POST', '/api/relay/join', b, { networkId: net.networkId });
+  await call('POST', '/api/relay/join', c, { networkId: net.networkId });
+  const state = async (token, extra = {}) => (await call('POST', '/api/ffa/state', token, { networkId: net.networkId, ...extra })).data;
+  const wait = () => new Promise((resolve) => setTimeout(resolve, 5100));
+  const first = await state(a, { slot: 1 });
+  assert.deepEqual([first.round.number, first.round.state, first.round.target], [1, 'running', 6]);
+  assert.equal(first.rank.name, '青铜');
+  await state(b, { slot: 2 });
+  await state(c, { slot: 3 });
+
+  // a knocks b down three times: a streak of three, announced, and a bounty on a.
+  let seen;
+  for (let i = 0; i < 3; i++) {
+    await state(a, { slot: 1, hits: [2] });
+    seen = await state(b, { slot: 2, death: true });
+    if (i < 2) await wait();
+  }
+  const holder = seen.players.find((p) => p.name === 'rndoneC');
+  assert.deepEqual([holder.kills, holder.score, holder.streak, holder.bounty], [3, 3, 3, true]);
+  assert.ok(seen.events.some((e) => e.text.includes('rndoneC') && e.text.includes('连杀 3 次')), JSON.stringify(seen.events));
+  assert.equal(seen.rank.points, 0, 'points never go below zero');
+
+  // c ends the streak: two points for one kill.
+  await state(c, { slot: 3, hits: [1] });
+  seen = await state(a, { slot: 1, death: true });
+  const hunter = seen.players.find((p) => p.name === 'rndthreeC');
+  assert.deepEqual([hunter.kills, hunter.score], [1, 2]);
+  assert.equal(seen.me.streak, 0);
+  assert.equal(seen.players.find((p) => p.name === 'rndoneC').bounty, false);
+  assert.ok(seen.events.some((e) => e.text.includes('rndthreeC') && e.text.includes('悬赏')));
+  assert.equal((await state(c, { slot: 3 })).rank.points, 4);
+  assert.equal(seen.rank.points, 5, 'three kills at 2, one death at -1');
+
+  // a reaches the target of 6 points: the round ends, and the first three get their prizes.
+  for (let i = 0; i < 3; i++) {
+    await wait();
+    await state(a, { slot: 1, hits: [2] });
+    seen = await state(b, { slot: 2, death: true });
+  }
+  assert.deepEqual([seen.round.state, seen.round.winner, seen.round.reason], ['ended', 'rndoneC', 'target']);
+  assert.deepEqual(seen.round.top.map((p) => [p.name, p.score]), [['rndoneC', 6], ['rndthreeC', 2], ['rndtwoC', 0]]);
+  assert.equal((await state(a, { slot: 1 })).rank.points, 5 + 6 + 25);
+  assert.equal((await state(c, { slot: 3 })).rank.points, 4 + 15);
+  // Nothing counts in the break; then the next round starts from zero.
+  await state(c, { slot: 3, hits: [1] });
+  assert.equal((await state(a, { slot: 1, death: true })).me.deaths, 1);
+  await new Promise((resolve) => setTimeout(resolve, 2100));
+  seen = await state(a, { slot: 1 });
+  assert.deepEqual([seen.round.number, seen.round.state, seen.me.kills, seen.me.score], [2, 'running', 0, 0]);
+  assert.equal(seen.me.totalKills, 6);
+
+  const board = (await call('GET', '/api/season/board', a)).data;
+  assert.deepEqual(board.board.filter((r) => r.name.startsWith('rnd')).slice(0, 2).map((r) => [r.name, r.points, r.kills, r.wins, r.rank]), [['rndoneC', 36, 6, 1, '青铜'], ['rndthreeC', 19, 1, 0, '青铜']]);
+  assert.equal(board.ranks.length, 7);
+  assert.equal((await call('GET', '/api/me/rank', a)).data.rank.next, 100);
+
+  assert.equal((await call('POST', '/api/admin/season/end', a)).status, 403);
+  const ended = (await call('POST', '/api/admin/season/end', admin)).data;
+  assert.equal(ended.season.id, ended.ended + 1);
+  const after = (await call('GET', '/api/season/board', a)).data;
+  assert.equal(after.board.length, 0);
+  assert.equal(after.last.top[0].name, 'rndoneC');
+  assert.equal((await state(a, { slot: 1 })).rank.points, 0);
+});
+
+test('team deathmatch: ending a streak scores double and both sides get rank points', async () => {
+  const hostToken = await player('bthost'), guestToken = await player('btguest');
+  const net = (await call('POST', '/api/relay/host', hostToken)).data.relay.networkId;
+  await call('POST', '/api/relay/join', guestToken, { networkId: net });
+  const body = (more = {}) => ({ networkId: net, ...more });
+  await call('POST', '/api/match/create', hostToken, body({ target: 5, minutes: 5 }));
+  await call('POST', '/api/match/team', hostToken, body({ team: 'red' }));
+  await call('POST', '/api/match/team', guestToken, body({ team: 'blue' }));
+  await call('POST', '/api/match/start', hostToken, body());
+  await call('POST', '/api/match/state', guestToken, body({ slot: 2 }));
+  let state;
+  for (let i = 0; i < 3; i++) {
+    if (i) await new Promise((resolve) => setTimeout(resolve, 5100));
+    await call('POST', '/api/match/state', hostToken, body({ slot: 1, hits: [2] }));
+    state = (await call('POST', '/api/match/death', guestToken, body({ slot: 2 }))).data.match;
+  }
+  assert.deepEqual([state.red, state.blue], [3, 0]);
+  assert.equal(state.players.find((p) => p.name === 'bthostC').bounty, true);
+  assert.ok(state.events.some((e) => e.text.includes('连杀 3 次')));
+  await call('POST', '/api/match/state', guestToken, body({ slot: 2, hits: [1] }));
+  state = (await call('POST', '/api/match/death', hostToken, body({ slot: 1 }))).data.match;
+  assert.deepEqual([state.red, state.blue], [3, 2], 'the bounty is worth two points');
+  const done = (await call('POST', '/api/match/end', hostToken, body())).data;
+  assert.equal(done.match.winner, 'red');
+  assert.equal(done.rank.points, 20 + 3 * 2 - 1);
+  assert.equal((await call('POST', '/api/match/state', guestToken, body())).data.rank.points, 2 * 2 - 3);
 });

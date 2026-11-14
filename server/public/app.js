@@ -224,7 +224,24 @@
     act(event.target, loadFfaBoard);
   });
 
+  async function loadSeason() {
+    const { season, ranks, points, board, last } = await api('GET', '/season/board');
+    const day = (at) => new Date(at * 1000).toLocaleDateString('zh-CN');
+    const left = Math.max(0, Math.ceil((season.endsAt - season.now) / 86400));
+    $('season-info').textContent = `第 ${season.id} 赛季：${day(season.startedAt)} 至 ${day(season.endsAt)}，还剩 ${left} 天，结束后积分清零。`
+      + `击杀 +${points.kill}（终结悬赏加倍），阵亡 ${points.death}；个人对战每局前三名 +${points.ffaPlaces.join(' / +')}；团队竞技获胜 +${points.teamWin}、平局 +${points.teamDraw}（至少 2 名真人）。`
+      + `段位：${ranks.map((r) => `${r.name} ${r.points}`).join(' · ')}。`;
+    const body = $('season-board').tBodies[0];
+    body.replaceChildren();
+    if (!board.length) body.append(el('tr', {}, el('td', { colspan: '6', class: 'sub' }, '本赛季还没有人上榜。')));
+    board.forEach((row, index) => body.append(el('tr', {}, el('td', {}, String(index + 1)), el('td', {}, row.name), el('td', {}, row.rank),
+      el('td', { class: 'num' }, String(row.points)), el('td', { class: 'num' }, String(row.kills)), el('td', { class: 'num' }, String(row.wins)))));
+    $('season-last').hidden = !(last && last.top.length);
+    if (last && last.top.length) $('season-last').textContent = `上赛季（第 ${last.id} 赛季）前三名：${last.top.map((r, i) => `${i + 1}. ${r.name}（${r.rank} ${r.points} 分）`).join('　')}`;
+  }
+
   async function loadBoard() {
+    await loadSeason();
     await loadFfaBoard();
     const { leaderboard } = await api('GET', '/leaderboard');
     const body = $('board').tBodies[0];
@@ -331,6 +348,11 @@
   $('ffa-reset-all').addEventListener('click', (event) => act(event.target, async () => {
     if (!confirm('把所有人的个人对战战绩全部清零？无法恢复。')) return;
     await api('POST', '/admin/ffa/reset', { all: true }); toast('已全部清零'); await loadFfaAdmin();
+  }));
+
+  $('season-end').addEventListener('click', (event) => act(event.target, async () => {
+    if (!confirm('立即结束本赛季？所有人的段位积分会从 0 重新开始，无法恢复。')) return;
+    const { season } = await api('POST', '/admin/season/end'); toast(`已开始第 ${season.id} 赛季`);
   }));
 
   // ---- start ----------------------------------------------------------------

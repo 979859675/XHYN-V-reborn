@@ -46,6 +46,9 @@ function load(overrides = {}) {
     relayMaxKbps: integer('RELAY_MAX_KBPS', 6000, 100, 1000000),
     relayMaxMembers: 10,
     relayIdleSeconds: 600,
+    ffaTarget: integer('FFA_TARGET', 20, 1, 500),
+    ffaMinutes: integer('FFA_MINUTES', 10, 1, 120),
+    seasonDays: integer('SEASON_DAYS', 30, 1, 366),
     ...overrides,
   };
   if (!['sqlite', 'mysql'].includes(config.dbDriver)) throw new Error('DB_DRIVER must be sqlite or mysql');

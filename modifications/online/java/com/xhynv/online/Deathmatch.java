@@ -76,7 +76,10 @@ public final class Deathmatch {
     private static long idleSince, fireAskedAt;
     /** Colour (RGB) of each name drawn above a head. Replaced as a whole, read by the game's draw thread. */
     private static volatile Map<String, Integer> nameColors = java.util.Collections.emptyMap();
-    private static final int RED = 0xFF5C5C, BLUE = 0x5AA2FF;
+    private static final int RED = 0xFF5C5C, BLUE = 0x5AA2FF, GOLD = 0xFFC83D;
+    private static long seenEvent;                        // poll thread: the last room announcement shown
+    private static volatile Map<String, Object> rank;     // the player's rank this season, as the server last said
+    private static long seenRound;                        // poll thread: the last free-for-all round whose result was shown
     private static boolean fireWasOff;
 
     // ---- the host's choices for the next match (UI thread) ------------------------
@@ -134,7 +137,7 @@ public final class Deathmatch {
                     try {
                         poll();
                         Map<String, Object> current = match;
-                        if (current != null && "running".equals(Json.string(current, "state"))) wait = 1500;
+                        if (arena != null || (current != null && "running".equals(Json.string(current, "state")))) wait = 1500;
                     } catch (Throwable ignored) {
                     }
                     Online.main.post(new Runnable() { @Override public void run() { render(); } });
@@ -279,16 +282,46 @@ public final class Deathmatch {
         Map<String, Object> field = arena, current = match;
         if (field != null) {
             for (Object entry : Json.list(field, "players")) {
-                if (entry instanceof Map && !Json.flag((Map<String, Object>) entry, "me")) colors.put(Json.string((Map<String, Object>) entry, "name"), RED);
+                if (!(entry instanceof Map) || Json.flag((Map<String, Object>) entry, "me")) continue;
+                Map<String, Object> player = (Map<String, Object>) entry;
+                colors.put(Json.string(player, "name"), Json.flag(player, "bounty") ? GOLD : RED);
             }
         } else if (current != null && !"finished".equals(Json.string(current, "state"))) {
             for (Object entry : Json.list(current, "players")) {
                 if (!(entry instanceof Map)) continue;
                 Map<String, Object> player = (Map<String, Object>) entry;
-                colors.put(Json.string(player, "name"), "red".equals(Json.string(player, "team")) ? RED : BLUE);
+                colors.put(Json.string(player, "name"), Json.flag(player, "bounty") ? GOLD : "red".equals(Json.string(player, "team")) ? RED : BLUE);
             }
         }
         nameColors = colors;
+    }
+
+    /** Shows the room's announcements (kill streaks, bounties, round results) that have not been shown yet. */
+    @SuppressWarnings("unchecked")
+    private static void announcements(Map<String, Object> from) {
+        if (from == null) return;
+        for (Object entry : Json.list(from, "events")) {
+            if (!(entry instanceof Map)) continue;
+            Map<String, Object> event = (Map<String, Object>) entry;
+            long id = Json.number(event, "id");
+            if (id <= seenEvent) continue;
+            seenEvent = id;
+            String text = Json.string(event, "text");
+            if (!text.isEmpty()) Online.toast(text);
+        }
+    }
+
+    /** "黄金 · 260 分（距 铂金 还差 240）" */
+    private static String rankText() {
+        Map<String, Object> mine = rank;
+        if (mine == null || Json.string(mine, "name").isEmpty()) return "";
+        long points = Json.number(mine, "points"), next = Json.number(mine, "next");
+        return "赛季段位：" + Json.string(mine, "name") + " · " + points + " 分" + (next > 0 ? "（再得 " + (next - points) + " 分升段）" : "（最高段位）");
+    }
+
+    private static String clock(long seconds) {
+        seconds = Math.max(0, seconds);
+        return seconds / 60 + ":" + (seconds % 60 < 10 ? "0" : "") + seconds % 60;
     }
 
     private static void poll() {
@@ -357,7 +390,14 @@ public final class Deathmatch {
         userId = Json.number(reply, "userId");
         match = null;
         arena = reply;
+        if (Json.map(reply, "rank") != null) rank = Json.map(reply, "rank");
         recolor();
+        announcements(reply);
+        Map<String, Object> round = Json.map(reply, "round");
+        if (round != null && "running".equals(Json.string(round, "state")) && Json.number(round, "number") != seenRound) {
+            seenRound = Json.number(round, "number");
+            Online.toast("个人对战第 " + seenRound + " 局：先到 " + Json.number(round, "target") + " 分获胜，终结连杀者得双倍分");
+        }
         long now = System.currentTimeMillis();
         if (host) {
             goneCount = 0;
@@ -412,6 +452,9 @@ public final class Deathmatch {
         userId = Json.number(reply, "userId");
         Map<String, Object> next = Json.map(reply, "match");
         match = next;
+        if (Json.map(reply, "rank") != null) rank = Json.map(reply, "rank");
+        recolor();
+        if (next != null && "running".equals(Json.string(next, "state"))) announcements(next);
         final String state = next == null ? "" : Json.string(next, "state");
         if (state.equals(seenState)) return;
         final String before = seenState;
@@ -708,31 +751,56 @@ public final class Deathmatch {
 
     // ---- free-for-all in a public room ---------------------------------------------
     private static String arenaSummary(Map<String, Object> field) {
-        Map<String, Object> me = Json.map(field, "me");
-        return "个人对战 · 击杀 " + (me == null ? 0 : Json.number(me, "kills")) + " / 阵亡 " + (me == null ? 0 : Json.number(me, "deaths"));
+        Map<String, Object> me = Json.map(field, "me"), round = Json.map(field, "round");
+        if (round == null) return "个人对战 · 击杀 " + (me == null ? 0 : Json.number(me, "kills")) + " / 阵亡 " + (me == null ? 0 : Json.number(me, "deaths"));
+        long now = Json.number(round, "now");
+        if (!"running".equals(Json.string(round, "state"))) return "本局结束 · " + Json.string(round, "winner") + " 获胜 · " + clock(Json.number(round, "nextAt") - now) + " 后下一局";
+        return "个人对战 " + (me == null ? 0 : Json.number(me, "score")) + "/" + Json.number(round, "target") + " 分 · " + clock(Json.number(round, "endsAt") - now);
     }
 
     private static List<Item> arenaItems(Map<String, Object> field) {
         List<Item> items = new ArrayList<Item>();
         Map<String, Object> me = Json.map(field, "me");
         items.add(new Item(0, "公共对战房 " + Json.number(field, "public") + (host ? " · 你是房主" : ""), null));
-        if (me != null) items.add(new Item(1, "本次：击杀 " + Json.number(me, "kills") + " · 阵亡 " + Json.number(me, "deaths")
+        Map<String, Object> round = Json.map(field, "round");
+        boolean ended = round != null && !"running".equals(Json.string(round, "state"));
+        if (round != null && ended) {
+            StringBuilder top = new StringBuilder("第 " + Json.number(round, "number") + " 局结束，" + Json.string(round, "winner") + " 获胜！");
+            int order = 0;
+            for (Object entry : Json.list(round, "top")) {
+                if (!(entry instanceof Map)) continue;
+                @SuppressWarnings("unchecked") Map<String, Object> one = (Map<String, Object>) entry;
+                top.append('\n').append(++order).append(". ").append(Json.string(one, "name")).append("　").append(Json.number(one, "score")).append(" 分 · 击杀 ")
+                        .append(Json.number(one, "kills")).append(" · 阵亡 ").append(Json.number(one, "deaths"));
+            }
+            top.append("\n").append(clock(Json.number(round, "nextAt") - Json.number(round, "now"))).append(" 后开始下一局，休息时间不计分");
+            items.add(new Item(1, top.toString(), null, GOLD));
+        } else if (round != null) {
+            items.add(new Item(1, "第 " + Json.number(round, "number") + " 局 · 先到 " + Json.number(round, "target") + " 分获胜 · 剩余 "
+                    + clock(Json.number(round, "endsAt") - Json.number(round, "now")) + "\n时间到按得分定胜负；击杀 1 分，终结金色名字（连杀 3 次以上）的玩家 2 分", null));
+        }
+        if (me != null) items.add(new Item(1, "本局：" + Json.number(me, "score") + " 分 · 击杀 " + Json.number(me, "kills") + " · 阵亡 " + Json.number(me, "deaths")
+                + (Json.number(me, "streak") >= 2 ? " · 连杀 " + Json.number(me, "streak") : "")
                 + "\n累计：击杀 " + Json.number(me, "totalKills") + " · 阵亡 " + Json.number(me, "totalDeaths"), null));
-        items.add(new Item(0, "房间内排名（本次）", null));
+        String standing = rankText();
+        if (!standing.isEmpty()) items.add(new Item(1, standing, null, GOLD));
+        items.add(new Item(0, "房间内排名（本局）", null));
         int place = 0;
         for (Object entry : Json.list(field, "players")) {
             if (!(entry instanceof Map)) continue;
             @SuppressWarnings("unchecked") Map<String, Object> player = (Map<String, Object>) entry;
             boolean mine = Json.flag(player, "me");
-            items.add(new Item(1, ++place + ". " + Json.string(player, "name") + (mine ? "（我）" : "") + "　击杀 " + Json.number(player, "kills")
-                    + " · 阵亡 " + Json.number(player, "deaths"), null, mine ? 0 : RED));
+            boolean bounty = Json.flag(player, "bounty");
+            items.add(new Item(1, ++place + ". " + Json.string(player, "name") + (mine ? "（我）" : "") + (Json.string(player, "rank").isEmpty() ? "" : " [" + Json.string(player, "rank") + "]")
+                    + "　" + Json.number(player, "score") + " 分 · 击杀 " + Json.number(player, "kills") + " · 阵亡 " + Json.number(player, "deaths")
+                    + (bounty ? " · 悬赏中（连杀 " + Json.number(player, "streak") + "）" : ""), null, bounty ? GOLD : mine ? 0 : RED));
         }
         String feed = feed(field);
         if (!feed.isEmpty()) {
             items.add(new Item(0, "最近", null));
             items.add(new Item(1, feed, null));
         }
-        items.add(new Item(0, "各打各的，只算自己的击杀；今日榜、本周榜和总榜在网页“排行榜”里。"
+        items.add(new Item(0, "各打各的，只算自己的击杀；赛季段位榜、今日榜、本周榜和总榜在网页“排行榜”里。"
                 + (host ? "\n你退出后，房间会由下一位玩家接手。" : ""), null));
         items.add(new Item(2, "退出公共对战房", new Runnable() {
             @Override public void run() {
@@ -787,6 +855,7 @@ public final class Deathmatch {
             out.append(Json.string(player, "name"));
             if (isMe(player)) out.append("（我）");
             if (scores) out.append("　击杀 ").append(Json.number(player, "kills")).append(" · 阵亡 ").append(Json.number(player, "deaths"));
+            if (scores && Json.flag(player, "bounty")) out.append(" · 悬赏中（连杀 ").append(Json.number(player, "streak")).append("）");
         }
         return out.length() == 0 ? "（还没有人）" : out.toString();
     }
@@ -855,8 +924,10 @@ public final class Deathmatch {
             return items;
         }
         boolean running = "running".equals(state);
-        items.add(new Item(0, running ? rules : result(current), null));
+        items.add(new Item(0, running ? rules + "\n终结金色名字（连杀 3 次以上）的玩家，本队得 2 分" : result(current), null));
         teams(items, current, true);
+        String standing = rankText();
+        if (!standing.isEmpty()) items.add(new Item(1, standing, null, GOLD));
         String feed = feed(current);
         if (!feed.isEmpty()) {
             items.add(new Item(0, "最近", null));

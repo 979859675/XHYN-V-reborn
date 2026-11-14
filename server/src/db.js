@@ -106,6 +106,22 @@ const TABLES = (pk) => [
     victim_character_id BIGINT NULL,
     victim_name VARCHAR(32) NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS seasons (
+    id ${pk},
+    started_at BIGINT NOT NULL,
+    ends_at BIGINT NOT NULL
+  )`,
+  // Rank points of one character in one season.
+  `CREATE TABLE IF NOT EXISTS rank_points (
+    season_id BIGINT NOT NULL,
+    character_id BIGINT NOT NULL,
+    name VARCHAR(32) NOT NULL,
+    points INTEGER NOT NULL DEFAULT 0,
+    kills INTEGER NOT NULL DEFAULT 0,
+    wins INTEGER NOT NULL DEFAULT 0,
+    updated_at BIGINT NOT NULL,
+    PRIMARY KEY (season_id, character_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS saves (
     character_id BIGINT PRIMARY KEY,
     size BIGINT NOT NULL,

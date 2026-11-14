@@ -544,7 +544,91 @@ function createApp(config, db, relay = createRelay(config)) {
   const matches = new Map();   // network id -> match
   const other = (team) => (team === 'red' ? 'blue' : 'red');
   const teamOf = (current, team) => [...current.players.values()].filter((p) => p.team === team);
-  const newPlayer = (fields) => ({ userId: 0, bot: 0, characterId: null, team: '', kills: 0, deaths: 0, diedAt: 0, slot: 0, hit: null, death: null, hits: 0, ...fields });
+  const newPlayer = (fields) => ({ userId: 0, bot: 0, characterId: null, team: '', kills: 0, deaths: 0, diedAt: 0, slot: 0, hit: null, death: null, hits: 0, streak: 0, ranked: 0, ...fields });
+
+  // ---- kill streaks and bounties -------------------------------------------------
+  // A player on a streak of BOUNTY_STREAK or more has a bounty: whoever ends it scores double.
+  // Announcements are short-lived lines every phone in the room shows once (by id).
+  const STREAKS = { 3: '连杀 3 次，正在大杀特杀', 5: '连杀 5 次，已经无人能挡', 7: '连杀 7 次，如同神一般' };
+  const BOUNTY_STREAK = 3;
+  let eventId = now() * 1000;
+  function announce(holder, text) {
+    holder.events.push({ id: ++eventId, at: now(), text });
+    if (holder.events.length > 20) holder.events.shift();
+  }
+  const publicEvents = (holder) => holder.events.filter((e) => now() - e.at <= 20).map((e) => ({ id: e.id, text: e.text }));
+  /** The killer of a death is known: moves the streaks on and returns the points of the kill (2 for a bounty). */
+  function streakKill(holder, killer, death) {
+    const bounty = death.streak >= BOUNTY_STREAK;
+    if (bounty) announce(holder, `${killer.name} 终结了 ${death.victim} 的 ${death.streak} 连杀，拿下悬赏，双倍得分！`);
+    killer.streak++;
+    if (STREAKS[killer.streak]) announce(holder, `${killer.name} ${STREAKS[killer.streak]}！击杀他可得双倍分`);
+    return bounty ? 2 : 1;
+  }
+
+  // ---- ranks and seasons ---------------------------------------------------------
+  // Rank points are kept per season and character. A season lasts config.seasonDays; when it is over
+  // the next one starts from zero (the old rows stay, for the "last season" list).
+  const RANKS = [[0, '青铜'], [100, '白银'], [250, '黄金'], [500, '铂金'], [900, '钻石'], [1400, '星耀'], [2000, '王者']];
+  const POINTS = { kill: 2, death: -1, ffaPlaces: [25, 15, 8], teamWin: 20, teamDraw: 5 };
+  function rankOf(points) {
+    let level = 0;
+    while (level + 1 < RANKS.length && points >= RANKS[level + 1][0]) level++;
+    return { points, name: RANKS[level][1], level, next: level + 1 < RANKS.length ? RANKS[level + 1][0] : 0 };
+  }
+  let season = null;
+  async function currentSeason() {
+    if (season && now() < season.endsAt) return season;
+    const last = await db.get('SELECT * FROM seasons ORDER BY id DESC LIMIT 1');
+    if (last && now() < Number(last.ends_at)) season = { id: Number(last.id), startedAt: Number(last.started_at), endsAt: Number(last.ends_at) };
+    else {
+      const days = config.seasonDays ?? 30;
+      const saved = await db.run('INSERT INTO seasons (started_at, ends_at) VALUES (?, ?)', [now(), now() + days * 86400]);
+      season = { id: saved.insertId, startedAt: now(), endsAt: now() + days * 86400 };
+    }
+    return season;
+  }
+  async function pointsOf(characterId) {
+    if (characterId == null) return 0;
+    const row = await db.get('SELECT points FROM rank_points WHERE season_id = ? AND character_id = ?', [(await currentSeason()).id, characterId]);
+    return row ? Number(row.points) : 0;
+  }
+  /** Adds (or takes) rank points; they never go below zero. Returns the new total. */
+  async function award(characterId, name, points, kills = 0, wins = 0) {
+    if (characterId == null) return 0;
+    const id = (await currentSeason()).id;
+    const update = () => db.run('UPDATE rank_points SET points = CASE WHEN points + ? < 0 THEN 0 ELSE points + ? END, kills = kills + ?, wins = wins + ?, name = ?, updated_at = ? WHERE season_id = ? AND character_id = ?',
+      [points, points, kills, wins, name, now(), id, characterId]);
+    if (!(await update()).changes) {
+      try {
+        await db.run('INSERT INTO rank_points (season_id, character_id, name, points, kills, wins, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [id, characterId, name, Math.max(0, points), kills, wins, now()]);
+      } catch (error) { await update(); }      // another request made the row first
+    }
+    return pointsOf(characterId);
+  }
+  async function seasonTop(id, limit) {
+    const rows = await db.all(`SELECT character_id, name, points, kills, wins FROM rank_points WHERE season_id = ? ORDER BY points DESC, kills DESC, character_id LIMIT ${limit}`, [id]);
+    return rows.map((r) => ({ characterId: Number(r.character_id), name: r.name, points: Number(r.points), kills: Number(r.kills), wins: Number(r.wins), rank: rankOf(Number(r.points)).name }));
+  }
+  api.get('/season/board', route(async (_req, res) => {
+    const current = await currentSeason();
+    const before = await db.get('SELECT * FROM seasons WHERE id < ? ORDER BY id DESC LIMIT 1', [current.id]);
+    res.json({ season: { ...current, now: now() }, ranks: RANKS.map(([points, name]) => ({ points, name })), points: POINTS,
+      board: await seasonTop(current.id, 50),
+      last: before ? { id: Number(before.id), startedAt: Number(before.started_at), endsAt: Number(before.ends_at), top: await seasonTop(Number(before.id), 3) } : null });
+  }));
+  api.get('/me/rank', authed(async (req, res) => {
+    res.json({ season: await currentSeason(), rank: rankOf(await pointsOf(req.user.active_character_id)) });
+  }));
+  // Ends the season now: everyone starts the next one from zero.
+  api.post('/admin/season/end', admin(async (_req, res) => {
+    const current = await currentSeason();
+    await db.run('UPDATE seasons SET ends_at = ? WHERE id = ?', [now(), current.id]);
+    season = null;
+    for (const arena of arenas.values()) arena.players.clear();
+    res.json({ ok: true, ended: current.id, season: await currentSeason() });
+  }));
 
   function matchContext(req) {
     const networkId = whole(req.body.networkId, '中转网络', 1, Number.MAX_SAFE_INTEGER);
@@ -571,6 +655,13 @@ function createApp(config, db, relay = createRelay(config)) {
           [saved.insertId, player.characterId, player.name, player.team, player.kills, player.deaths, player.team === match.winner ? 1 : 0]);
       }
     });
+    // Rank points: only when at least two real players took part (a match against bots alone is practice).
+    const humans = players.filter((p) => !p.bot && p.characterId != null);
+    if (humans.length < 2) return;
+    for (const player of humans) {
+      const won = player.team === match.winner;
+      await award(player.characterId, player.name, (won ? POINTS.teamWin : match.winner === 'draw' ? POINTS.teamDraw : 0) + player.ranked * POINTS.kill + player.deaths * POINTS.death, player.ranked, won ? 1 : 0);
+    }
   }
   /** Ends a match whose time is up, and forgets finished ones after a while. */
   async function settle(networkId) {
@@ -585,14 +676,19 @@ function createApp(config, db, relay = createRelay(config)) {
     return { state: match.state, target: match.target, minutes: match.minutes, botHits: match.botHits, record: match.record, hostName: match.hostName,
       red: match.score.red, blue: match.score.blue, winner: match.winner || '', reason: match.reason || '',
       startedAt: match.startedAt || 0, endsAt: match.endsAt || 0, endedAt: match.endedAt || 0, now: now(),
-      players: [...match.players.entries()].filter(([, p]) => p.team).map(([id, p]) => ({ id: String(id), userId: p.userId, bot: !!p.bot, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths })),
+      players: [...match.players.entries()].filter(([, p]) => p.team).map(([id, p]) => ({ id: String(id), userId: p.userId, bot: !!p.bot, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths,
+        streak: p.streak, bounty: match.state === 'running' && p.streak >= BOUNTY_STREAK })),
+      events: publicEvents(match),
       feed: match.feed.slice(-5).map((f) => ({ at: f.at, victim: f.victim, killer: f.killer, team: f.team })) };
   }
 
-  const credit = (victim, killer) => {
+  /** Gives a death to its killer. Ending a bounty is worth a second point for the killer's team. */
+  const credit = (current, victim, killer) => {
     if (!killer || killer === victim || killer.team === victim.team || victim.death.killer) return;
     killer.kills++;
+    if (!victim.bot) killer.ranked++;
     victim.death.killer = killer.name;
+    if (streakKill(current, killer, victim.death) === 2) { current.score[killer.team]++; if (!victim.bot) killer.ranked++; }
   };
   /** One death: a point for the other team, and a kill for whoever did it (given, or the last to damage the victim). */
   async function kill(current, victim, killer) {
@@ -601,11 +697,12 @@ function createApp(config, db, relay = createRelay(config)) {
     victim.deaths++;
     victim.hits = 0;
     current.score[scorer]++;
-    victim.death = { at: now(), victim: victim.name, killer: '', team: scorer };
+    victim.death = { at: now(), victim: victim.name, killer: '', team: scorer, streak: victim.streak };
+    victim.streak = 0;
     current.feed.push(victim.death);
     if (current.feed.length > 20) current.feed.shift();
-    if (killer) credit(victim, killer);
-    else if (victim.hit && now() - victim.hit.at <= HIT_SECONDS) credit(victim, current.players.get(victim.hit.by));
+    if (killer) credit(current, victim, killer);
+    else if (victim.hit && now() - victim.hit.at <= HIT_SECONDS) credit(current, victim, current.players.get(victim.hit.by));
     victim.hit = null;
     if (current.score[scorer] >= current.target) await finishMatch(current, 'target');
   }
@@ -664,7 +761,8 @@ function createApp(config, db, relay = createRelay(config)) {
         victim.hits += Number.isInteger(counts[i]) && counts[i] > 0 ? Math.min(counts[i], 50) : 1;
         if (victim.hits >= current.botHits) await kill(current, victim, player);
       } else if (victim.death && now() - victim.death.at <= LATE_HIT_SECONDS) {
-        credit(victim, player);     // damage reported just after the death belongs to that death
+        credit(current, victim, player);     // damage reported just after the death belongs to that death
+        if (current.score[player.team] >= current.target) await finishMatch(current, 'target');
       } else {
         victim.hit = { by: player.userId, at: now() };
       }
@@ -678,7 +776,8 @@ function createApp(config, db, relay = createRelay(config)) {
     await noteClient(req, context.match);
     await handler(req, context);
     const room = await publicRoomOf(context.networkId);
-    res.json({ host: context.host, userId: Number(req.user.id), public: room ? extra(room.id).public : 0, match: publicMatch(await settle(context.networkId)) });
+    res.json({ host: context.host, userId: Number(req.user.id), public: room ? extra(room.id).public : 0,
+      rank: rankOf(await pointsOf(req.user.active_character_id)), match: publicMatch(await settle(context.networkId)) });
   });
 
   api.post('/match/state', match(async () => {}));
@@ -692,7 +791,7 @@ function createApp(config, db, relay = createRelay(config)) {
     const created = { state: 'lobby', hostId: Number(req.user.id), hostName: character ? character.name : req.user.username,
       target: whole(req.body.target ?? 20, '目标击杀数', 1, 200), minutes: whole(req.body.minutes ?? 15, '时间上限', 1, 60),
       botHits: whole(req.body.botHits ?? 3, '击倒人机所需命中数', 1, 50), record: req.body.record !== false,
-      score: { red: 0, blue: 0 }, players: new Map(), feed: [], debug: [], createdAt: now() };
+      score: { red: 0, blue: 0 }, players: new Map(), feed: [], events: [], debug: [], createdAt: now() };
     matches.set(context.networkId, created);
     if (Array.isArray(req.body.bots)) syncBots(created, req.body.bots);
   }));
@@ -764,9 +863,39 @@ function createApp(config, db, relay = createRelay(config)) {
   }));
 
   // ---- free-for-all ("个人对战") in the public rooms --------------------------------
-  // No teams and no end: every death is stored, with the last player to damage the victim as the
-  // killer. A death nobody caused (a fall, the police) counts for the victim only.
-  const arenas = new Map();   // network id -> { number, players: Map(user id -> player), feed }
+  // No teams: every death is stored, with the last player to damage the victim as the killer. A death
+  // nobody caused (a fall, the police) counts for the victim only.
+  // The room plays rounds: the first to FFA_TARGET points wins (a kill is 1, ending a bounty 2); when
+  // FFA_MINUTES are up the highest score wins. After a short break the next round starts from zero.
+  const arenas = new Map();   // network id -> { number, players: Map(user id -> player), feed, events, round }
+  const FFA_TARGET = config.ffaTarget ?? 20, FFA_SECONDS = config.ffaSeconds ?? (config.ffaMinutes ?? 10) * 60, FFA_BREAK = config.ffaBreakSeconds ?? 15;
+  function newRound(arena) {
+    arena.round = { number: arena.round ? arena.round.number + 1 : 1, state: 'running', startedAt: now(), endsAt: now() + FFA_SECONDS, nextAt: 0, winner: '', reason: '', top: [] };
+    for (const [id, p] of arena.players) {
+      if (now() - p.seenAt > 30) { arena.players.delete(id); continue; }
+      Object.assign(p, { kills: 0, deaths: 0, score: 0, streak: 0, hit: null, death: null });
+    }
+  }
+  async function endRound(arena, reason) {
+    const round = arena.round;
+    const ranking = [...arena.players.values()].filter((p) => p.kills || p.deaths).sort((a, b) => b.score - a.score || a.deaths - b.deaths);
+    if (!ranking.length || ranking[0].score <= 0) { round.startedAt = now(); round.endsAt = now() + FFA_SECONDS; return; }   // nobody scored: play on
+    Object.assign(round, { state: 'ended', reason, endedAt: now(), nextAt: now() + FFA_BREAK, winner: ranking[0].name,
+      top: ranking.slice(0, 3).map((p) => ({ name: p.name, score: p.score, kills: p.kills, deaths: p.deaths })) });
+    announce(arena, `第 ${round.number} 局结束：${ranking[0].name} 以 ${ranking[0].score} 分获胜！${FFA_BREAK} 秒后开始下一局`);
+    if (ranking.length < 2) return;
+    for (let place = 0; place < POINTS.ffaPlaces.length && place < ranking.length; place++) {
+      const p = ranking[place];
+      if (p.score > 0) p.points = await award(p.characterId, p.name, POINTS.ffaPlaces[place], 0, place === 0 ? 1 : 0);
+    }
+  }
+  async function tick(arena) {
+    if (!arena.round) newRound(arena);
+    if (arena.round.state === 'running' && now() >= arena.round.endsAt) await endRound(arena, 'time');
+    if (arena.round.state === 'ended' && now() >= arena.round.nextAt) newRound(arena);
+  }
+  const publicRound = (round) => (round ? { number: round.number, state: round.state, target: FFA_TARGET, seconds: FFA_SECONDS, startedAt: round.startedAt,
+    endsAt: round.endsAt, nextAt: round.nextAt, now: now(), winner: round.winner, reason: round.reason, top: round.top } : null);
   const dayOffset = (config.boardUtcOffsetHours ?? 8) * 3600;
   /** Start of today, of this week (Monday) and of everything, in the boards' time zone. */
   function since(range) {
@@ -787,17 +916,24 @@ function createApp(config, db, relay = createRelay(config)) {
     return [...byId.values()].sort((a, b) => b.kills - a.kills || a.deaths - b.deaths || a.characterId - b.characterId);
   }
   function publicArena(arena, viewer) {
-    if (!arena) return { players: [], feed: [] };
+    if (!arena) return { players: [], feed: [], events: [], round: null };
     const present = [...arena.players.values()].filter((p) => now() - p.seenAt <= 30);
-    return { players: present.sort((a, b) => b.kills - a.kills || a.deaths - b.deaths)
-        .map((p) => ({ userId: p.userId, name: p.name, kills: p.kills, deaths: p.deaths, me: p.userId === viewer })),
+    const running = arena.round && arena.round.state === 'running';
+    return { players: present.sort((a, b) => b.score - a.score || b.kills - a.kills || a.deaths - b.deaths)
+        .map((p) => ({ userId: p.userId, name: p.name, kills: p.kills, deaths: p.deaths, score: p.score, streak: p.streak,
+          bounty: !!running && p.streak >= BOUNTY_STREAK, rank: rankOf(p.points).name, me: p.userId === viewer })),
+      events: publicEvents(arena), round: publicRound(arena.round),
       feed: arena.feed.slice(-5).map((f) => ({ at: f.at, victim: f.victim, killer: f.killer })) };
   }
-  async function ffaCredit(death, killer, victim) {
+  async function ffaCredit(arena, death, killer, victim) {
     if (!killer || killer === victim || death.killer) return;
     death.killer = killer.name;
     killer.kills++; killer.total.kills++;
+    const worth = streakKill(arena, killer, death);
+    killer.score += worth;
     await db.run('UPDATE ffa_kills SET killer_character_id = ?, killer_name = ? WHERE id = ?', [killer.characterId, killer.name, death.id]);
+    killer.points = await award(killer.characterId, killer.name, POINTS.kill * worth, 1);
+    if (killer.score >= FFA_TARGET && arena.round.state === 'running') await endRound(arena, 'target');
   }
 
   // One call does everything a phone needs: says it is here, reports who it damaged and whether it
@@ -815,40 +951,46 @@ function createApp(config, db, relay = createRelay(config)) {
     }
     for (const [id, old] of arenas) if (now() - old.touchedAt > 3600) arenas.delete(id);
     let arena = arenas.get(networkId);
-    if (!arena) { arena = { number: extra(room.id).public, players: new Map(), feed: [] }; arenas.set(networkId, arena); }
+    if (!arena) { arena = { number: extra(room.id).public, players: new Map(), feed: [], events: [] }; arenas.set(networkId, arena); }
     arena.touchedAt = now();
+    await tick(arena);
     let player = arena.players.get(me);
     if (!player || player.characterId !== Number(req.user.active_character_id)) {
       const character = req.user.active_character_id == null ? null : await db.get('SELECT id, name FROM characters WHERE id = ?', [req.user.active_character_id]);
       if (!character) throw bad('请先创建并选择角色', 'no_character');
       const [total] = await ffaTotals(0, Number(character.id));
-      player = { userId: me, characterId: Number(character.id), name: character.name, slot: 0, kills: 0, deaths: 0, diedAt: 0, hit: null, death: null, seenAt: 0,
+      player = { userId: me, characterId: Number(character.id), name: character.name, slot: 0, kills: 0, deaths: 0, score: 0, streak: 0,
+        points: await pointsOf(Number(character.id)), diedAt: 0, hit: null, death: null, seenAt: 0,
         total: { kills: total ? total.kills : 0, deaths: total ? total.deaths : 0 } };
       arena.players.set(me, player);
     }
     player.seenAt = now();
     if (Number.isInteger(req.body.slot) && req.body.slot >= 1 && req.body.slot <= 10) player.slot = req.body.slot;
-    if (Array.isArray(req.body.hits)) {
+    const playing = () => arena.round.state === 'running';      // nothing counts in the break between rounds
+    if (playing() && Array.isArray(req.body.hits)) {
       for (const slot of req.body.hits.slice(0, 10)) {
         const victim = [...arena.players.values()].find((p) => p.slot === slot && p !== player && now() - p.seenAt <= 30);
-        if (!victim) continue;
-        if (victim.death && now() - victim.death.at <= LATE_HIT_SECONDS) await ffaCredit(victim.death, player, victim);
+        if (!victim || !playing()) continue;
+        if (victim.death && now() - victim.death.at <= LATE_HIT_SECONDS) await ffaCredit(arena, victim.death, player, victim);
         else victim.hit = { by: me, at: now() };
       }
     }
-    if (req.body.death && now() - player.diedAt >= RESPAWN_SECONDS) {      // one death per respawn
+    if (playing() && req.body.death && now() - player.diedAt >= RESPAWN_SECONDS) {      // one death per respawn
       player.diedAt = now();
       player.deaths++; player.total.deaths++;
       const saved = await db.run('INSERT INTO ffa_kills (at, room, killer_character_id, killer_name, victim_character_id, victim_name) VALUES (?, ?, NULL, ?, ?, ?)',
         [now(), arena.number, '', player.characterId, player.name]);
-      player.death = { id: saved.insertId, at: now(), victim: player.name, killer: '' };
+      player.death = { id: saved.insertId, at: now(), victim: player.name, killer: '', streak: player.streak };
+      player.streak = 0;
+      player.points = await award(player.characterId, player.name, POINTS.death);
       arena.feed.push(player.death);
       if (arena.feed.length > 20) arena.feed.shift();
-      if (player.hit && now() - player.hit.at <= HIT_SECONDS) await ffaCredit(player.death, arena.players.get(player.hit.by), player);
+      if (player.hit && now() - player.hit.at <= HIT_SECONDS) await ffaCredit(arena, player.death, arena.players.get(player.hit.by), player);
       player.hit = null;
     }
     res.json({ public: arena.number, host: role === 'host', alive: hostAlive(room), userId: me,
-      me: { kills: player.kills, deaths: player.deaths, totalKills: player.total.kills, totalDeaths: player.total.deaths },
+      me: { kills: player.kills, deaths: player.deaths, score: player.score, streak: player.streak, totalKills: player.total.kills, totalDeaths: player.total.deaths },
+      rank: rankOf(player.points),
       ...publicArena(arena, me) });
   }));
 
