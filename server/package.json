@@ -1,0 +1,20 @@
+{
+  "name": "xhyn-v-online-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Accounts, characters, room lobby and statistics for XHYN V LAN multiplayer",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "optionalDependencies": {
+    "mysql2": "^3.11.5"
+  }
+}

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c0d12">
+<title>星战GTA5Online 联机中心</title>
+<link rel="stylesheet" href="style.css?v=24">
+</head>
+<body class="signed-out">
+<header class="top">
+  <div class="brand"><span class="mark">星</span><span class="brand-text"><b>星战GTA5Online</b><small>联机中心</small></span></div>
+  <div class="who" id="who" hidden>
+    <span class="chip"><span id="who-name"></span><span class="rank" id="who-rank" hidden></span></span>
+    <button class="ghost" id="logout">退出登录</button>
+  </div>
+</header>
+
+<main id="auth" class="auth" hidden>
+  <div class="hero">
+    <h1>星战GTA5Online</h1>
+    <p>赛车 · 团队竞技 · 个人对战 · 赛季段位</p>
+  </div>
+  <section class="card glass">
+    <div class="switch" role="tablist">
+      <button id="tab-login" class="on" role="tab">登录</button>
+      <button id="tab-register" role="tab">注册</button>
+    </div>
+    <form id="auth-form" autocomplete="on">
+      <label>用户名<input id="username" name="username" autocomplete="username" required maxlength="20"></label>
+      <label>密码<input id="password" name="password" type="password" autocomplete="current-password" required maxlength="72"></label>
+      <label id="invite-row" hidden>邀请码<input id="invite" name="invite" maxlength="64"></label>
+      <p class="hint" id="auth-hint">用户名 3～20 位，可用中文、字母、数字、下划线；密码至少 8 位。</p>
+      <p class="error" id="auth-error" role="alert"></p>
+      <button class="primary" id="auth-submit">登录</button>
+    </form>
+  </section>
+  <p class="note">非官方的玩家自建服务，与 Rockstar Games 无关。需要自备正版 GTA V。</p>
+</main>
+
+<div id="app" hidden>
+  <nav class="tabs" id="tabs">
+    <button data-view="rooms" class="on"><i>🎮</i>在线房间</button>
+    <button data-view="characters"><i>🧑</i>我的角色</button>
+    <button data-view="board"><i>🏆</i>排行榜</button>
+    <button data-view="races"><i>📜</i>最近比赛</button>
+    <button data-view="account"><i>🔑</i>账号</button>
+    <button data-view="admin" id="admin-tab" hidden><i>🛠</i>管理</button>
+  </nav>
+  <p class="error banner" id="app-error" role="alert"></p>
+  <main>
+    <section id="view-rooms" class="view">
+      <div class="season-strip" id="season-strip" hidden>
+        <div><small>当前赛季</small><b id="strip-season"></b></div>
+        <div><small>剩余</small><b id="strip-left"></b></div>
+        <div><small>我的段位</small><b id="strip-rank"></b></div>
+        <div class="grow"><small id="strip-next"></small><div class="bar"><span id="strip-bar"></span></div></div>
+      </div>
+      <div class="modes">
+        <div class="mode race"><h3>🏁 街头赛车</h3><p>自己创建房间，房主在“房主专属”里选赛道开赛。单程冲刺或绕圈，成绩自动上榜。</p></div>
+        <div class="mode team"><h3>⚔️ 团队竞技</h3><p>红蓝两队，每队最多 5 人，先到目标击杀数获胜，时间到按比分结算。终结连杀者本队得 2 分。</p></div>
+        <div class="mode ffa"><h3>🔥 个人对战</h3><p>在联机页创建或加入个人战房，各打各的。每局先到 <b id="mode-target">20</b> 分获胜，<b id="mode-minutes">10</b> 分钟到点按得分结算，15 秒后自动下一局。</p></div>
+        <div class="mode streak"><h3>💰 连杀与悬赏</h3><p>连杀 3 / 5 / 7 次全房公告，名字变金色。击杀金色名字的玩家得双倍分。</p></div>
+      </div>
+      <div class="row-head"><h2>在线房间</h2><button class="ghost" id="rooms-refresh">刷新</button></div>
+      <p class="hint">在手机联机页的玩法卡片里创建或加入对应的房间：赛车房、团队竞技房，或直接进入个人对战。全部通过服务器联机，不需要同一 Wi-Fi、热点或组网软件。</p>
+      <div id="rooms" class="list"></div>
+    </section>
+
+    <section id="view-characters" class="view" hidden>
+      <h2>我的角色</h2>
+      <p class="hint">角色名就是你在联机房间里显示的名字，全服唯一，创建后不能修改。</p>
+      <div id="characters" class="list"></div>
+      <form id="character-form" class="card inline">
+        <label>角色名<input id="character-name" required minlength="2" maxlength="16" placeholder="2～16 位"></label>
+        <label>人物模型<select id="character-model"></select></label>
+        <button class="primary">创建角色</button>
+      </form>
+    </section>
+
+    <section id="view-board" class="view" hidden>
+      <h2>排行榜</h2>
+      <p class="hint">战绩由玩家的游戏上报，仅供娱乐。</p>
+      <div class="subtabs" id="board-tabs">
+        <button class="on" data-sub="season">赛季段位榜</button>
+        <button data-sub="ffa">个人对战榜</button>
+        <button data-sub="all">综合榜</button>
+      </div>
+      <div class="sub-view" data-sub="season">
+        <div class="ranks" id="rank-legend"></div>
+        <p class="hint" id="season-info"></p>
+        <div class="podium" id="season-last" hidden></div>
+        <div class="table-wrap"><table id="season-board" class="ranked"><thead><tr><th>#</th><th>角色</th><th>段位</th><th class="num">积分</th><th class="num">击杀</th><th class="num">胜场</th></tr></thead><tbody></tbody></table></div>
+        <div class="pager" id="season-pager"></div>
+      </div>
+      <div class="sub-view" data-sub="ffa" hidden>
+        <div class="ranges" id="ffa-ranges"><button class="ghost on" data-range="day">今日</button><button class="ghost" data-range="week">本周</button><button class="ghost" data-range="all">总榜</button></div>
+        <div class="table-wrap"><table id="ffa-board" class="ranked"><thead><tr><th>#</th><th>角色</th><th class="num">击杀</th><th class="num">阵亡</th><th class="num">K/D</th></tr></thead><tbody></tbody></table></div>
+        <div class="pager" id="ffa-pager"></div>
+      </div>
+      <div class="sub-view" data-sub="all" hidden>
+        <p class="hint">按街头赛车胜场排序（至少 2 人参赛才算胜场）。</p>
+        <div class="table-wrap"><table id="board" class="ranked"><thead><tr><th>#</th><th>角色</th><th class="num">赛车胜场</th><th class="num">完赛</th><th class="num">参赛</th><th class="num">团队竞技胜场</th><th class="num">团队竞技场次</th><th class="num">击杀</th><th class="num">阵亡</th><th class="num">个人对战击杀</th><th class="num">个人对战阵亡</th><th class="num">在线时长</th></tr></thead><tbody></tbody></table></div>
+        <div class="pager" id="board-pager"></div>
+      </div>
+    </section>
+
+    <section id="view-races" class="view" hidden>
+      <h2>最近比赛</h2>
+      <div class="subtabs" id="races-tabs">
+        <button class="on" data-sub="team">团队竞技</button>
+        <button data-sub="race">街头赛车</button>
+      </div>
+      <div class="sub-view" data-sub="team">
+        <div id="matches" class="list"></div>
+        <div class="pager" id="matches-pager"></div>
+      </div>
+      <div class="sub-view" data-sub="race" hidden>
+        <div id="races" class="list"></div>
+        <div class="pager" id="races-pager"></div>
+      </div>
+    </section>
+
+    <section id="view-account" class="view" hidden>
+      <h2>账号</h2>
+      <form id="password-form" class="card narrow">
+        <label>当前密码<input id="current-password" type="password" autocomplete="current-password" required></label>
+        <label>新密码<input id="new-password" type="password" autocomplete="new-password" required minlength="8" maxlength="72"></label>
+        <p class="hint">修改后，其他设备上的登录会失效。</p>
+        <button class="primary">修改密码</button>
+      </form>
+    </section>
+
+    <section id="view-admin" class="view" hidden>
+      <h2>管理</h2>
+      <div class="subtabs" id="admin-tabs">
+        <button class="on" data-sub="users">用户</button>
+        <button data-sub="ffa">对战记录</button>
+        <button data-sub="season">赛季</button>
+      </div>
+      <div class="sub-view" data-sub="users">
+        <p class="hint">“重置密码”用于帮忘记密码的用户设一个新密码，对方在所有设备上的登录会失效。改自己的密码请到“账号”页。</p>
+        <form class="search" id="users-search"><input id="users-q" placeholder="搜索用户名" maxlength="32"><button class="ghost">搜索</button></form>
+        <div class="table-wrap"><table id="users"><thead><tr><th>ID</th><th>用户名</th><th>注册时间</th><th>最近登录</th><th></th></tr></thead><tbody></tbody></table></div>
+        <div class="pager" id="users-pager"></div>
+      </div>
+      <div class="sub-view" data-sub="ffa" hidden>
+        <div class="row-head"><h3>个人对战战绩</h3><button class="danger" id="ffa-reset-all">全部清零</button></div>
+        <p class="hint">个人战房里的累计战绩。每一次阵亡记一条；没有击杀者的是摔死、被警察打死等。</p>
+        <form class="search" id="players-search"><input id="players-q" placeholder="搜索角色名" maxlength="32"><button class="ghost">搜索</button></form>
+        <div class="table-wrap"><table id="ffa-players"><thead><tr><th>角色</th><th class="num">累计击杀</th><th class="num">累计阵亡</th><th class="num">今日击杀</th><th>最近参战</th><th></th></tr></thead><tbody></tbody></table></div>
+        <div class="pager" id="players-pager"></div>
+        <h3>击杀明细</h3>
+        <form class="search" id="kills-search"><input id="kills-q" placeholder="搜索击杀者或阵亡者" maxlength="32"><button class="ghost">搜索</button></form>
+        <div class="table-wrap"><table id="ffa-kills"><thead><tr><th>时间</th><th>房间</th><th>击杀者</th><th>阵亡者</th></tr></thead><tbody></tbody></table></div>
+        <div class="pager" id="kills-pager"></div>
+      </div>
+      <div class="sub-view" data-sub="season" hidden>
+        <div class="card narrow">
+          <h3 id="admin-season-title">赛季</h3>
+          <p class="hint" id="admin-season-info"></p>
+          <p class="hint">赛季到期会自动结束并开始下一赛季，所有人的段位积分从 0 开始。下面的按钮用于提前结束。</p>
+          <button class="danger" id="season-end">立即结束本赛季</button>
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer class="foot">官网 <a href="https://zy.xzcqgzs.cn/">zy.xzcqgzs.cn</a> · QQ群 942876882<br>非官方的玩家自建服务，与 Rockstar Games 无关。</footer>
+</div>
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="app.js?v=24"></script>
+</body>
+</html>
