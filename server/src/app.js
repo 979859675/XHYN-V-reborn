@@ -395,7 +395,6 @@ function createApp(config, db, relay = createRelay(config)) {
     if (!row) throw new ApiError(404, 'not_found', '房间不存在或已过期');
     if (!req.user.is_admin && Number(row.user_id) !== Number(req.user.id)) throw new ApiError(403, 'forbidden', '只有房主或管理员可以设置人机');
     if (row.host_address !== HOST_IP) throw bad('只有用“公网联机”创建的房间可以加人机', 'not_relayed');
-    if (extra(id).public) throw bad('个人战房不能加人机', 'public_room');
     // "fill" asks for as many bots as there are free seats.
     const count = req.body.fill
       ? Math.max(0, Math.min(MAX_BOTS, Number(row.max_players) - Math.max(1, relay.realCount(Number(row.user_id)))))

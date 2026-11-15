@@ -345,7 +345,12 @@ test('public free-for-all room: first in hosts, others join, kills are stored an
   const second = await enter(b);
   assert.equal(second.data.action, 'join');
   assert.equal(second.data.room.id, room.id);
-  assert.equal((await call('POST', `/api/rooms/${room.id}/bots`, a, { count: 1 })).status, 400, 'no bots in the public room');
+  // Test bots may stand in a free-for-all room too (they only take seats; they do not score).
+  const withBot = await call('POST', `/api/rooms/${room.id}/bots`, a, { count: 1 });
+  assert.equal(withBot.status, 200);
+  assert.equal(withBot.data.room.bots, 1);
+  assert.equal((await call('POST', `/api/rooms/${room.id}/bots`, b, { count: 2 })).status, 403, 'only the host or an administrator');
+  assert.equal((await call('POST', `/api/rooms/${room.id}/bots`, a, { count: 0 })).data.room.bots, 0);
   const list = (await call('GET', '/api/rooms', b)).data;
   assert.equal(list.publicOpen, true);
   assert.equal(list.rooms[0].id, room.id, 'public rooms are listed first');

@@ -246,7 +246,7 @@
         await api('POST', `/rooms/${room.id}/bots`, { count, mirror }); await loadRooms();
         toast('已设置。房主手机会在 10 秒内照做（需要新版客户端）');
       });
-      const botButtons = (user.isAdmin || room.debug !== undefined) && room.relayNetwork && !room.public ? [
+      const botButtons = (user.isAdmin || room.debug !== undefined) && room.relayNetwork ? [
         el('button', { class: 'ghost', onclick: setBots(Math.min(9, room.bots + 1), room.botMirror) }, '加人机'),
         el('button', { class: 'ghost', onclick: (e) => act(e.target, async () => {
           await api('POST', `/rooms/${room.id}/bots`, { fill: true, mirror: room.botMirror }); await loadRooms();
