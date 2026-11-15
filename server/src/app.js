@@ -75,7 +75,11 @@ function createApp(config, db, relay = createRelay(config)) {
     else res.set({ 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; frame-ancestors 'none'" });
     next();
   });
-  app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: '5m' }));
+  app.use(express.static(path.join(__dirname, '..', 'public'), {
+    // Pages, scripts and styles are checked with the server every time (a cheap 304), so a redeploy
+    // shows at once; pictures may be kept for a while.
+    setHeaders(res, file) { res.setHeader('Cache-Control', /\.(html|js|css)$/.test(file) ? 'no-cache' : 'public, max-age=300'); },
+  }));
 
   const api = express.Router();
   app.use('/api', api);
