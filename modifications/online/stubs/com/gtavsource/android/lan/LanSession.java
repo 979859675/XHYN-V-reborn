@@ -14,7 +14,8 @@ public final class LanSession {
     public static boolean setFriendlyFire(Context context, boolean enabled) { throw new UnsupportedOperationException(); }
     static String publishAnnouncement(String text) { throw new UnsupportedOperationException(); }
     public static void host(Context context, String name) { throw new UnsupportedOperationException(); }
-    public static void join(Context context, String name, String address, String code) { throw new UnsupportedOperationException(); }
+    /** The real method passes its arguments on as start(context, false, address, name, code): the address comes first. */
+    public static void join(Context context, String address, String name, String code) { throw new UnsupportedOperationException(); }
     public static void disconnect() { throw new UnsupportedOperationException(); }
     public static String setPlayerLimit(Context context, int limit) { throw new UnsupportedOperationException(); }
     public static State state() { throw new UnsupportedOperationException(); }

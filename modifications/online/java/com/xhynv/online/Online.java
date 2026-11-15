@@ -208,11 +208,11 @@ public final class Online {
                 }
             } else {
                 if (!Relay.HOST_IP.equals(address == null ? "" : address.trim())) {
-                    return refuse("本版本只支持服务器联机：请在联机中心里点“在线房间”选择房间。", false);
+                    return refuse("本版本只支持服务器联机：请在上面玩法卡片的房间列表里选择房间。", false);
                 }
                 relay = Relay.joinSession;
                 if (relay == null || !relay.fresh(now)) {
-                    return refuse("这个房间的连接信息已过期，请在“在线房间”里重新选择它。", false);
+                    return refuse("这个房间的连接信息已过期，请在玩法卡片的房间列表里重新选择它。", false);
                 }
             }
             Relay.active = relay;
@@ -310,7 +310,7 @@ public final class Online {
                             roomMode = wanted;
                             try {
                                 if (host) LanSession.host(context, name);
-                                else LanSession.join(context, name, Relay.HOST_IP, code);
+                                else LanSession.join(context, Relay.HOST_IP, name, code);     // the game takes the address before the name
                             } catch (Throwable t) {
                                 toast("没能开始联机：" + t.getClass().getSimpleName());
                             } finally {
