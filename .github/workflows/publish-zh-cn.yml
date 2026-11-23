@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT
+name: Publish zh-CN release
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - releases/0.3-preview2-zh-CN/**
+      - .github/workflows/publish-zh-cn.yml
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.repository != 'XHYN-PH/XHYN-V-reborn'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: v0.3-preview2-zh-CN
+      APK: XHYN-V-0.3-Preview2-zh-CN.apk
+    steps:
+      - uses: actions/checkout@v4
+      - name: Join and verify the APK
+        working-directory: releases/0.3-preview2-zh-CN
+        run: |
+          set -euo pipefail
+          cat "$APK.part0" "$APK.part1" "$APK.part2" > "$APK"
+          sha256sum -c SHA256SUMS.txt
+      - name: Create or update the release
+        working-directory: releases/0.3-preview2-zh-CN
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" "$APK" SHA256SUMS.txt --target "$GITHUB_SHA" --prerelease \
+              --title "XHYN V 0.3 Preview 2 · 启动器汉化版" --notes-file RELEASE-NOTES.md
+          fi

@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: MIT
+name: Build online release
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - modifications/online/VERSION
+      - modifications/online/SOURCE
+      - modifications/online/signing/release.p12
+      - .github/workflows/build-online.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.repository != 'XHYN-PH/XHYN-V-reborn'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BASE: XHYN-V-0.3-Preview2-zh-CN.apk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Build, sign and publish
+        run: |
+          set -euo pipefail
+          N=$(tr -dc 0-9a-z < modifications/online/VERSION)
+          # A test build can take the client sources of an earlier commit (file SOURCE), keeping today's signing key.
+          if [ -s modifications/online/SOURCE ]; then
+            git checkout "$(tr -dc 0-9a-f < modifications/online/SOURCE)" -- modifications/online/java modifications/online/stubs modifications/online/build_online.py
+          fi
+          # Releases are named after the build number alone: tag online22, file 星战GTA5Online-22.apk.
+          TAG=online$N
+          APK=星战GTA5Online-$N.apk
+          NOTES=releases/online$N/RELEASE-NOTES.md
+          T=$RUNNER_TEMP/tools; mkdir -p "$T"
+          fail() { echo "::error::$1%0A$(tail -n 40 "$T/log.txt" 2>/dev/null | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"; exit 1; }
+          {
+            (cd releases/0.3-preview2-zh-CN && cat "$BASE.part0" "$BASE.part1" "$BASE.part2" > "$T/zh.apk")
+            curl -fsSL -o "$T/apktool.jar" https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
+            curl -fsSL -o "$T/ecj.jar" https://repo1.maven.org/maven2/org/eclipse/jdt/ecj/3.33.0/ecj-3.33.0.jar
+            BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+            JAR=$(ls "$ANDROID_HOME"/platforms/android-*/android.jar | sort -V | tail -n 1)
+            echo "build-tools $BT, $JAR"
+          } > "$T/log.txt" 2>&1 || fail "could not prepare the tools"
+          python3 modifications/online/build_online.py --base-apk "$T/zh.apk" --work-dir "$T/w" \
+            --apktool "$T/apktool.jar" --apksigner "$BT/lib/apksigner.jar" --ecj "$T/ecj.jar" \
+            --d8-classpath "$BT/lib/d8.jar" --android-jar "$JAR" \
+            --keystore modifications/online/signing/release.p12 --password-file modifications/online/signing/pass.txt \
+            --version-name "online$N" --output "$T/app.apk" >> "$T/log.txt" 2>&1 || fail "build failed"
+          mv "$T/app.apk" "$T/$APK"
+          tail -n 30 "$T/log.txt"
+          cd "$T"
+          sha256sum "$APK" > SHA256SUMS.txt
+          {
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              gh release upload "$TAG" "$APK" SHA256SUMS.txt --clobber
+            else
+              gh release create "$TAG" "$APK" SHA256SUMS.txt --target "$GITHUB_SHA" --latest \
+                --title "星战GTA5Online-$N" --notes-file "$GITHUB_WORKSPACE/$NOTES"
+            fi
+            # GitHub may drop the Chinese part of an uploaded file's name: put it back, or at least show it as the label.
+            ID=$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '.assets[] | select(.name | endswith(".apk")) | .id' | head -n 1)
+            gh api -X PATCH "repos/$GH_REPO/releases/assets/$ID" -f name="$APK" -f label="$APK" \
+              || gh api -X PATCH "repos/$GH_REPO/releases/assets/$ID" -f label="$APK"
+            gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '.assets[] | "\(.name) | \(.label) | \(.size)"'
+          } > "$T/log.txt" 2>&1 || fail "could not publish the release"
